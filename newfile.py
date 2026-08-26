@@ -1696,6 +1696,251 @@ def process_alliance_kick(message):
 
 
 
+def get_alliance_by_name(name: str) -> Optional[Dict[str, Any]]:
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM alliances WHERE name = ?", (name,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+def process_alliance_war(message):
+    attacker_id = message.from_user.id
+    target_alliance_name = message.text.strip()
+
+    attacker_alliance = get_alliance(attacker_id)
+    if not attacker_alliance or attacker_alliance['leader_id'] != attacker_id:
+        return
+
+    target_alliance = get_alliance_by_name(target_alliance_name)
+    if not target_alliance:
+        bot.send_message(message.chat.id, "❌ اتحادی با این نام یافت نشد.")
+        return
+
+    if attacker_alliance['id'] == target_alliance['id']:
+        bot.send_message(message.chat.id, "❌ نمی‌توانید به اتحاد خودتان حمله کنید!")
+        return
+
+    if is_in_peace(attacker_alliance['id'], target_alliance['id']):
+        bot.send_message(message.chat.id, "❌ شما با این اتحاد در صلح هستید! برای حمله ابتدا باید پیمان صلح را بشکنید.")
+        return
+
+
+    bot.send_message(message.chat.id, f"⏳ در حال آماده‌سازی نیروهای اتحاد برای جنگ با {target_alliance_name}...\nنبرد دقیقاً 1 دقیقه دیگر آغاز می‌شود!")
+
+    try:
+        target_leader_id = target_alliance['leader_id']
+        bot.send_message(target_leader_id, f"⚠️ هشدار! اتحاد {attacker_alliance['name']} به اتحاد شما اعلان جنگ داده است!\nنبرد دقیقاً 1 دقیقه دیگر آغاز می‌شود. نیروهای خود را آماده کنید!")
+    except Exception as e:
+        print(f"Failed to send warning to alliance leader {target_leader_id}: {e}")
+
+    timer = threading.Timer(60.0, execute_alliance_war, args=[attacker_alliance['id'], target_alliance['id'], message.chat.id, target_leader_id])
+    timer.start()
+
+def execute_alliance_war(att_alliance_id: int, def_alliance_id: int, att_chat_id: int, def_leader_id: int):
+    att_members = get_alliance_members(att_alliance_id)
+    def_members = get_alliance_members(def_alliance_id)
+
+    # Sort by total_soldiers DESC
+    att_members.sort(key=lambda x: x['total_soldiers'], reverse=True)
+    def_members.sort(key=lambda x: x['total_soldiers'], reverse=True)
+
+    # Select top 3 (or less if fewer members)
+    att_fighters = att_members[:3]
+    def_fighters = def_members[:3]
+
+    fights_count = min(len(att_fighters), len(def_fighters))
+    if fights_count == 0:
+        return # Should not happen
+
+    att_wins = 0
+    def_wins = 0
+    report = "⚔️ <b>گزارش نبرد قبیله‌ای</b>\n\n"
+
+    for i in range(fights_count):
+        a_id = att_fighters[i]['user_id']
+        d_id = def_fighters[i]['user_id']
+        result = simulate_battle(a_id, d_id)
+
+        a_name = get_username_or_name(get_user_raw(a_id))
+        d_name = get_username_or_name(get_user_raw(d_id))
+
+        if result['winner'] == a_id:
+            att_wins += 1
+            report += f"🥊 نبرد {i+1}: {a_name} 🆚 {d_name} 🏆 برنده: {a_name}\n"
+        elif result['winner'] == d_id:
+            def_wins += 1
+            report += f"🥊 نبرد {i+1}: {a_name} 🆚 {d_name} 🏆 برنده: {d_name}\n"
+        else:
+            report += f"🥊 نبرد {i+1}: {a_name} 🆚 {d_name} 🏆 نتیجه: نامشخص\n"
+
+    report += "\n━━━━━━━━━━━━━━━━\n"
+
+    if att_wins > def_wins:
+        report += "🎉 <b>اتحاد شما پیروز شد!</b>\nسطح اتحاد افزایش یافت."
+        with get_connection() as conn:
+            conn.execute("UPDATE alliances SET level = level + 1 WHERE id = ?", (att_alliance_id,))
+        for m in att_members:
+            add_exp(m['user_id'], 500, att_chat_id)
+
+    elif def_wins > att_wins:
+        report += "💀 <b>اتحاد شما شکست خورد!</b> اتحاد حریف پیروز شد."
+        with get_connection() as conn:
+            conn.execute("UPDATE alliances SET level = level + 1 WHERE id = ?", (def_alliance_id,))
+        for m in def_members:
+            add_exp(m['user_id'], 500, def_leader_id) # Using def_leader_id as fallback
+    else:
+        report += "🤝 <b>نبرد مساوی شد!</b>"
+
+    try:
+        bot.send_message(att_chat_id, report)
+    except: pass
+
+    try:
+        bot.send_message(def_leader_id, report.replace("اتحاد شما پیروز شد", "اتحاد حریف پیروز شد").replace("اتحاد شما شکست خورد", "اتحاد شما پیروز شد"))
+    except: pass
+
+
+def show_leaderboard(chat_id: int, user_id: int, message_id: Optional[int] = None):
+    with get_connection() as conn:
+        cur = conn.cursor()
+
+        # 1. Top 5 Empires (Order by level DESC, attack_power DESC)
+        cur.execute("SELECT user_id, empire_name, level, attack_power FROM users WHERE banned = 0 ORDER BY level DESC, attack_power DESC LIMIT 5")
+        top_empires = cur.fetchall()
+
+        # 2. User's own empire rank
+        cur.execute("SELECT COUNT(*) + 1 FROM users WHERE banned = 0 AND (level > (SELECT level FROM users WHERE user_id = ?) OR (level = (SELECT level FROM users WHERE user_id = ?) AND attack_power > (SELECT attack_power FROM users WHERE user_id = ?)))", (user_id, user_id, user_id))
+        user_rank = cur.fetchone()[0]
+
+        # 3. Top 5 Alliances
+        cur.execute("SELECT id, name, level FROM alliances ORDER BY level DESC LIMIT 5")
+        top_alliances = cur.fetchall()
+
+        # 4. User's alliance rank
+        user_alliance = get_alliance(user_id)
+        alliance_rank_text = "شما در هیچ اتحادی نیستید."
+        if user_alliance:
+            all_id = user_alliance['id']
+            # We need to get member counts per alliance for ranking, simpler to just rank by level, then member count if we use a subquery or we rank in python.
+            cur.execute("SELECT COUNT(*) + 1 FROM alliances WHERE level > ?", (user_alliance['level'],))
+            all_rank = cur.fetchone()[0]
+            alliance_rank_text = str(all_rank)
+
+        text = "🏆 <b>رتبه‌بندی سرور</b>\n\n"
+        text += "👑 <b>امپراطوری‌های برتر:</b>\n"
+        for i, emp in enumerate(top_empires):
+            text += f"{i+1}. {emp['empire_name']} (سطح: {emp['level']} | قدرت حمله: {format_number(emp['attack_power'])})\n"
+
+        text += "\n👥 <b>اتحادهای برتر:</b>\n"
+        for i, al in enumerate(top_alliances):
+            # count members
+            cur.execute("SELECT COUNT(*) FROM alliance_members WHERE alliance_id = ?", (al['id'],))
+            m_count = cur.fetchone()[0]
+            text += f"{i+1}. {al['name']} (سطح: {al['level']} | اعضا: {m_count})\n"
+
+        text += "\n━━━━━━━━━━━━━━━━\n"
+        text += f"🏅 رتبه امپراطوری شما: {user_rank}\n"
+        text += f"🎖 رتبه اتحاد شما: {alliance_rank_text}\n"
+
+        markup = build_inline_keyboard([[inline_btn("🏠 بازگشت", "main_menu", "info")]])
+        edit_or_send(chat_id, message_id, text, markup, user_id)
+
+
+def is_in_peace(alliance_id_1: int, alliance_id_2: int) -> bool:
+    if not alliance_id_1 or not alliance_id_2: return False
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM peace_treaties WHERE (alliance_1_id = ? AND alliance_2_id = ?) OR (alliance_1_id = ? AND alliance_2_id = ?)", (alliance_id_1, alliance_id_2, alliance_id_2, alliance_id_1))
+        return bool(cur.fetchone())
+
+def show_alliance_peace_list(chat_id: int, user_id: int, message_id: Optional[int] = None):
+    alliance = get_alliance(user_id)
+    if not alliance: return
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT alliance_1_id, alliance_2_id FROM peace_treaties WHERE alliance_1_id = ? OR alliance_2_id = ?", (alliance['id'], alliance['id']))
+        treaties = cur.fetchall()
+
+        text = "📜 <b>اتحادهای در صلح</b>\n\n"
+        if not treaties:
+            text += "شما با هیچ اتحادی پیمان صلح ندارید.\n"
+        else:
+            for t in treaties:
+                other_id = t['alliance_2_id'] if t['alliance_1_id'] == alliance['id'] else t['alliance_1_id']
+                cur.execute("SELECT name FROM alliances WHERE id = ?", (other_id,))
+                row = cur.fetchone()
+                if row:
+                    text += f"🕊 {row['name']}\n"
+
+    markup = build_inline_keyboard([[inline_btn("🏠 بازگشت", "main_menu", "info")]])
+    edit_or_send(chat_id, message_id, text, markup, user_id)
+
+def process_alliance_peace(message):
+    req_user_id = message.from_user.id
+    target_name = message.text.strip()
+
+    req_alliance = get_alliance(req_user_id)
+    if not req_alliance or req_alliance['leader_id'] != req_user_id: return
+
+    target_alliance = get_alliance_by_name(target_name)
+    if not target_alliance:
+        bot.send_message(message.chat.id, "❌ اتحادی با این نام یافت نشد.")
+        return
+
+    if req_alliance['id'] == target_alliance['id']:
+        bot.send_message(message.chat.id, "❌ نمی‌توانید با خودتان صلح کنید!")
+        return
+
+    if is_in_peace(req_alliance['id'], target_alliance['id']):
+        bot.send_message(message.chat.id, "⚠️ شما از قبل با این اتحاد در صلح هستید.")
+        return
+
+    target_leader_id = target_alliance['leader_id']
+    markup = build_inline_keyboard([
+        [inline_btn("✅ پذیرش صلح", f"peace_accept_{req_alliance['id']}_{target_alliance['id']}", "success")],
+        [inline_btn("❌ رد صلح", f"peace_reject_{req_alliance['id']}_{target_alliance['id']}", "danger")]
+    ])
+
+    try:
+        bot.send_message(target_leader_id, f"🕊 لیدر اتحاد {req_alliance['name']} درخواست پیمان صلح داده است. آیا می‌پذیرید؟", reply_markup=markup)
+        bot.send_message(message.chat.id, "✅ درخواست صلح برای لیدر اتحاد مقابل ارسال شد.")
+    except:
+        bot.send_message(message.chat.id, "❌ خطا در ارسال پیام به لیدر مقابل.")
+
+def accept_peace_treaty(chat_id: int, user_id: int, req_alliance_id: int, target_alliance_id: int, message_id: int):
+    target_alliance = get_alliance(user_id)
+    if not target_alliance or target_alliance['id'] != target_alliance_id or target_alliance['leader_id'] != user_id:
+        bot.answer_callback_query(chat_id, "شما مجاز به این کار نیستید.", show_alert=True)
+        return
+
+    if not is_in_peace(req_alliance_id, target_alliance_id):
+        with get_connection() as conn:
+            conn.execute("INSERT INTO peace_treaties (alliance_1_id, alliance_2_id, created_at) VALUES (?, ?, ?)", (req_alliance_id, target_alliance_id, int(time.time())))
+
+    bot.edit_message_text("✅ پیمان صلح برقرار شد.", chat_id=chat_id, message_id=message_id)
+
+def process_alliance_break_peace(message):
+    req_user_id = message.from_user.id
+    target_name = message.text.strip()
+
+    req_alliance = get_alliance(req_user_id)
+    if not req_alliance or req_alliance['leader_id'] != req_user_id: return
+
+    target_alliance = get_alliance_by_name(target_name)
+    if not target_alliance:
+        bot.send_message(message.chat.id, "❌ اتحادی با این نام یافت نشد.")
+        return
+
+    if is_in_peace(req_alliance['id'], target_alliance['id']):
+        with get_connection() as conn:
+            conn.execute("DELETE FROM peace_treaties WHERE (alliance_1_id = ? AND alliance_2_id = ?) OR (alliance_1_id = ? AND alliance_2_id = ?)", (req_alliance['id'], target_alliance['id'], target_alliance['id'], req_alliance['id']))
+        bot.send_message(message.chat.id, f"💔 پیمان صلح با {target_name} شکسته شد.")
+    else:
+        bot.send_message(message.chat.id, "⚠️ شما با این اتحاد در صلح نیستید.")
+
+
+
+
 @bot.message_handler(content_types=['text'])
 def global_text_handler(message):
     user_id = message.from_user.id
@@ -2046,12 +2291,14 @@ def callback_handler(call: types.CallbackQuery):
             return
 
         if data == 'alliance_peace_prompt':
+            alliance = get_alliance(user_id)
             if alliance and alliance['leader_id'] == user_id:
                 bot.send_message(chat_id, "🕊 لطفاً نام اتحادی که می‌خواهید با آن صلح کنید را وارد کنید:")
                 set_user_state(user_id, 'process_alliance_peace')
             return
 
         if data == 'alliance_break_peace':
+            alliance = get_alliance(user_id)
             if alliance and alliance['leader_id'] == user_id:
                 bot.send_message(chat_id, "💔 لطفاً نام اتحادی که می‌خواهید پیمان صلح با آن را بشکنید وارد کنید:")
                 set_user_state(user_id, 'process_alliance_break_peace')
@@ -2063,12 +2310,13 @@ def callback_handler(call: types.CallbackQuery):
             target_alliance_id = int(parts[3])
             accept_peace_treaty(chat_id, user_id, req_alliance_id, target_alliance_id, message_id)
             return
-            
+
         if data.startswith('peace_reject_'):
             bot.edit_message_text("❌ درخواست صلح رد شد.", chat_id=chat_id, message_id=message_id)
             return
 
         if data == 'alliance_war_prompt':
+            alliance = get_alliance(user_id)
             if alliance and alliance['leader_id'] == user_id:
                 bot.send_message(chat_id, "⚔️ جنگ قبیله‌ای!\nلطفاً نام اتحادی که می‌خواهید به آن حمله کنید را وارد کنید:")
                 set_user_state(user_id, 'process_alliance_war')
@@ -2945,247 +3193,3 @@ if __name__ == '__main__':
     bg_thread = threading.Thread(target=background_jobs, daemon=True)
     bg_thread.start()
     bot.polling(none_stop=True, interval=0, timeout=20, long_polling_timeout=15)
-
-def get_alliance_by_name(name: str) -> Optional[Dict[str, Any]]:
-    with get_connection() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM alliances WHERE name = ?", (name,))
-        row = cur.fetchone()
-        return dict(row) if row else None
-
-def process_alliance_war(message):
-    attacker_id = message.from_user.id
-    target_alliance_name = message.text.strip()
-
-    attacker_alliance = get_alliance(attacker_id)
-    if not attacker_alliance or attacker_alliance['leader_id'] != attacker_id:
-        return
-
-    target_alliance = get_alliance_by_name(target_alliance_name)
-    if not target_alliance:
-        bot.send_message(message.chat.id, "❌ اتحادی با این نام یافت نشد.")
-        return
-
-    if attacker_alliance['id'] == target_alliance['id']:
-        bot.send_message(message.chat.id, "❌ نمی‌توانید به اتحاد خودتان حمله کنید!")
-        return
-
-    if is_in_peace(attacker_alliance['id'], target_alliance['id']):
-        bot.send_message(message.chat.id, "❌ شما با این اتحاد در صلح هستید! برای حمله ابتدا باید پیمان صلح را بشکنید.")
-        return
-
-
-    bot.send_message(message.chat.id, f"⏳ در حال آماده‌سازی نیروهای اتحاد برای جنگ با {target_alliance_name}...\nنبرد دقیقاً 1 دقیقه دیگر آغاز می‌شود!")
-
-    try:
-        target_leader_id = target_alliance['leader_id']
-        bot.send_message(target_leader_id, f"⚠️ هشدار! اتحاد {attacker_alliance['name']} به اتحاد شما اعلان جنگ داده است!\nنبرد دقیقاً 1 دقیقه دیگر آغاز می‌شود. نیروهای خود را آماده کنید!")
-    except Exception as e:
-        print(f"Failed to send warning to alliance leader {target_leader_id}: {e}")
-
-    timer = threading.Timer(60.0, execute_alliance_war, args=[attacker_alliance['id'], target_alliance['id'], message.chat.id, target_leader_id])
-    timer.start()
-
-def execute_alliance_war(att_alliance_id: int, def_alliance_id: int, att_chat_id: int, def_leader_id: int):
-    att_members = get_alliance_members(att_alliance_id)
-    def_members = get_alliance_members(def_alliance_id)
-
-    # Sort by total_soldiers DESC
-    att_members.sort(key=lambda x: x['total_soldiers'], reverse=True)
-    def_members.sort(key=lambda x: x['total_soldiers'], reverse=True)
-
-    # Select top 3 (or less if fewer members)
-    att_fighters = att_members[:3]
-    def_fighters = def_members[:3]
-
-    fights_count = min(len(att_fighters), len(def_fighters))
-    if fights_count == 0:
-        return # Should not happen
-
-    att_wins = 0
-    def_wins = 0
-    report = "⚔️ <b>گزارش نبرد قبیله‌ای</b>\n\n"
-
-    for i in range(fights_count):
-        a_id = att_fighters[i]['user_id']
-        d_id = def_fighters[i]['user_id']
-        result = simulate_battle(a_id, d_id)
-
-        a_name = get_username_or_name(get_user_raw(a_id))
-        d_name = get_username_or_name(get_user_raw(d_id))
-
-        if result['winner'] == a_id:
-            att_wins += 1
-            report += f"🥊 نبرد {i+1}: {a_name} 🆚 {d_name} 🏆 برنده: {a_name}\n"
-        elif result['winner'] == d_id:
-            def_wins += 1
-            report += f"🥊 نبرد {i+1}: {a_name} 🆚 {d_name} 🏆 برنده: {d_name}\n"
-        else:
-            report += f"🥊 نبرد {i+1}: {a_name} 🆚 {d_name} 🏆 نتیجه: نامشخص\n"
-
-    report += "\n━━━━━━━━━━━━━━━━\n"
-
-    if att_wins > def_wins:
-        report += "🎉 <b>اتحاد شما پیروز شد!</b>\nسطح اتحاد افزایش یافت."
-        with get_connection() as conn:
-            conn.execute("UPDATE alliances SET level = level + 1 WHERE id = ?", (att_alliance_id,))
-        for m in att_members:
-            add_exp(m['user_id'], 500, att_chat_id)
-
-    elif def_wins > att_wins:
-        report += "💀 <b>اتحاد شما شکست خورد!</b> اتحاد حریف پیروز شد."
-        with get_connection() as conn:
-            conn.execute("UPDATE alliances SET level = level + 1 WHERE id = ?", (def_alliance_id,))
-        for m in def_members:
-            add_exp(m['user_id'], 500, def_leader_id) # Using def_leader_id as fallback
-    else:
-        report += "🤝 <b>نبرد مساوی شد!</b>"
-
-    try:
-        bot.send_message(att_chat_id, report)
-    except: pass
-
-    try:
-        bot.send_message(def_leader_id, report.replace("اتحاد شما پیروز شد", "اتحاد حریف پیروز شد").replace("اتحاد شما شکست خورد", "اتحاد شما پیروز شد"))
-    except: pass
-
-
-def show_leaderboard(chat_id: int, user_id: int, message_id: Optional[int] = None):
-    with get_connection() as conn:
-        cur = conn.cursor()
-
-        # 1. Top 5 Empires (Order by level DESC, attack_power DESC)
-        cur.execute("SELECT user_id, empire_name, level, attack_power FROM users WHERE banned = 0 ORDER BY level DESC, attack_power DESC LIMIT 5")
-        top_empires = cur.fetchall()
-
-        # 2. User's own empire rank
-        cur.execute("SELECT COUNT(*) + 1 FROM users WHERE banned = 0 AND (level > (SELECT level FROM users WHERE user_id = ?) OR (level = (SELECT level FROM users WHERE user_id = ?) AND attack_power > (SELECT attack_power FROM users WHERE user_id = ?)))", (user_id, user_id, user_id))
-        user_rank = cur.fetchone()[0]
-
-        # 3. Top 5 Alliances
-        cur.execute("SELECT id, name, level FROM alliances ORDER BY level DESC LIMIT 5")
-        top_alliances = cur.fetchall()
-
-        # 4. User's alliance rank
-        user_alliance = get_alliance(user_id)
-        alliance_rank_text = "شما در هیچ اتحادی نیستید."
-        if user_alliance:
-            all_id = user_alliance['id']
-            # We need to get member counts per alliance for ranking, simpler to just rank by level, then member count if we use a subquery or we rank in python.
-            cur.execute("SELECT COUNT(*) + 1 FROM alliances WHERE level > ?", (user_alliance['level'],))
-            all_rank = cur.fetchone()[0]
-            alliance_rank_text = str(all_rank)
-
-        text = "🏆 <b>رتبه‌بندی سرور</b>\n\n"
-        text += "👑 <b>امپراطوری‌های برتر:</b>\n"
-        for i, emp in enumerate(top_empires):
-            text += f"{i+1}. {emp['empire_name']} (سطح: {emp['level']} | قدرت حمله: {format_number(emp['attack_power'])})\n"
-
-        text += "\n👥 <b>اتحادهای برتر:</b>\n"
-        for i, al in enumerate(top_alliances):
-            # count members
-            cur.execute("SELECT COUNT(*) FROM alliance_members WHERE alliance_id = ?", (al['id'],))
-            m_count = cur.fetchone()[0]
-            text += f"{i+1}. {al['name']} (سطح: {al['level']} | اعضا: {m_count})\n"
-
-        text += "\n━━━━━━━━━━━━━━━━\n"
-        text += f"🏅 رتبه امپراطوری شما: {user_rank}\n"
-        text += f"🎖 رتبه اتحاد شما: {alliance_rank_text}\n"
-
-        markup = build_inline_keyboard([[inline_btn("🏠 بازگشت", "main_menu", "info")]])
-        edit_or_send(chat_id, message_id, text, markup, user_id)
-
-
-def is_in_peace(alliance_id_1: int, alliance_id_2: int) -> bool:
-    if not alliance_id_1 or not alliance_id_2: return False
-    with get_connection() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT 1 FROM peace_treaties WHERE (alliance_1_id = ? AND alliance_2_id = ?) OR (alliance_1_id = ? AND alliance_2_id = ?)", (alliance_id_1, alliance_id_2, alliance_id_2, alliance_id_1))
-        return bool(cur.fetchone())
-
-def show_alliance_peace_list(chat_id: int, user_id: int, message_id: Optional[int] = None):
-    alliance = get_alliance(user_id)
-    if not alliance: return
-    with get_connection() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT alliance_1_id, alliance_2_id FROM peace_treaties WHERE alliance_1_id = ? OR alliance_2_id = ?", (alliance['id'], alliance['id']))
-        treaties = cur.fetchall()
-
-    text = "📜 <b>اتحادهای در صلح</b>\n\n"
-    if not treaties:
-        text += "شما با هیچ اتحادی پیمان صلح ندارید.\n"
-    else:
-        for t in treaties:
-            other_id = t['alliance_2_id'] if t['alliance_1_id'] == alliance['id'] else t['alliance_1_id']
-            with get_connection() as conn:
-                cur = conn.cursor()
-                cur.execute("SELECT name FROM alliances WHERE id = ?", (other_id,))
-                row = cur.fetchone()
-                if row:
-                    text += f"🕊 {row['name']}\n"
-
-    markup = build_inline_keyboard([[inline_btn("🏠 بازگشت", "main_menu", "info")]])
-    edit_or_send(chat_id, message_id, text, markup, user_id)
-
-def process_alliance_peace(message):
-    req_user_id = message.from_user.id
-    target_name = message.text.strip()
-
-    req_alliance = get_alliance(req_user_id)
-    if not req_alliance or req_alliance['leader_id'] != req_user_id: return
-
-    target_alliance = get_alliance_by_name(target_name)
-    if not target_alliance:
-        bot.send_message(message.chat.id, "❌ اتحادی با این نام یافت نشد.")
-        return
-
-    if req_alliance['id'] == target_alliance['id']:
-        bot.send_message(message.chat.id, "❌ نمی‌توانید با خودتان صلح کنید!")
-        return
-
-    if is_in_peace(req_alliance['id'], target_alliance['id']):
-        bot.send_message(message.chat.id, "⚠️ شما از قبل با این اتحاد در صلح هستید.")
-        return
-
-    target_leader_id = target_alliance['leader_id']
-    markup = build_inline_keyboard([
-        [inline_btn("✅ پذیرش صلح", f"peace_accept_{req_alliance['id']}_{target_alliance['id']}", "success")],
-        [inline_btn("❌ رد صلح", f"peace_reject_{req_alliance['id']}_{target_alliance['id']}", "danger")]
-    ])
-
-    try:
-        bot.send_message(target_leader_id, f"🕊 لیدر اتحاد {req_alliance['name']} درخواست پیمان صلح داده است. آیا می‌پذیرید؟", reply_markup=markup)
-        bot.send_message(message.chat.id, "✅ درخواست صلح برای لیدر اتحاد مقابل ارسال شد.")
-    except:
-        bot.send_message(message.chat.id, "❌ خطا در ارسال پیام به لیدر مقابل.")
-
-def accept_peace_treaty(chat_id: int, user_id: int, req_alliance_id: int, target_alliance_id: int, message_id: int):
-    target_alliance = get_alliance(user_id)
-    if not target_alliance or target_alliance['id'] != target_alliance_id or target_alliance['leader_id'] != user_id:
-        bot.answer_callback_query(chat_id, "شما مجاز به این کار نیستید.", show_alert=True)
-        return
-
-    if not is_in_peace(req_alliance_id, target_alliance_id):
-        with get_connection() as conn:
-            conn.execute("INSERT INTO peace_treaties (alliance_1_id, alliance_2_id, created_at) VALUES (?, ?, ?)", (req_alliance_id, target_alliance_id, int(time.time())))
-
-    bot.edit_message_text("✅ پیمان صلح برقرار شد.", chat_id=chat_id, message_id=message_id)
-
-def process_alliance_break_peace(message):
-    req_user_id = message.from_user.id
-    target_name = message.text.strip()
-
-    req_alliance = get_alliance(req_user_id)
-    if not req_alliance or req_alliance['leader_id'] != req_user_id: return
-
-    target_alliance = get_alliance_by_name(target_name)
-    if not target_alliance:
-        bot.send_message(message.chat.id, "❌ اتحادی با این نام یافت نشد.")
-        return
-
-    if is_in_peace(req_alliance['id'], target_alliance['id']):
-        with get_connection() as conn:
-            conn.execute("DELETE FROM peace_treaties WHERE (alliance_1_id = ? AND alliance_2_id = ?) OR (alliance_1_id = ? AND alliance_2_id = ?)", (req_alliance['id'], target_alliance['id'], target_alliance['id'], req_alliance['id']))
-        bot.send_message(message.chat.id, f"💔 پیمان صلح با {target_name} شکسته شد.")
-    else:
-        bot.send_message(message.chat.id, "⚠️ شما با این اتحاد در صلح نیستید.")
