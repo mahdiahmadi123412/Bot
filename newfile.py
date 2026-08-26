@@ -40,15 +40,24 @@ SEASON_DAYS = 30
 # ============================================================
 bot = telebot.TeleBot(TOKEN, parse_mode='HTML')
 
-# دیکشنری موقت برای نگهداری مالک پیام‌ها
-message_owners = {}
 
-def get_connection() -> sqlite3.Connection:
+
+from contextlib import contextmanager
+
+@contextmanager
+def get_connection():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+    try:
+        yield conn
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        conn.close()
 
 def add_column_if_not_exists(conn, table, column, col_type):
     cur = conn.cursor()
@@ -56,246 +65,256 @@ def add_column_if_not_exists(conn, table, column, col_type):
     cols = [row[1] for row in cur.fetchall()]
     if column not in cols:
         cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
-        conn.commit()
 
 def init_db() -> None:
-    conn = get_connection()
-    cur = conn.cursor()
+    with get_connection() as conn:
+        cur = conn.cursor()
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            first_name TEXT,
-            empire_name TEXT UNIQUE,
-            level INTEGER DEFAULT 1,
-            exp INTEGER DEFAULT 0,
-            coins INTEGER DEFAULT 500,
-            wood INTEGER DEFAULT 400,
-            stone INTEGER DEFAULT 350,
-            food INTEGER DEFAULT 600,
-            total_soldiers INTEGER DEFAULT 0,
-            attack_power INTEGER DEFAULT 0,
-            defense_power INTEGER DEFAULT 0,
-            last_production INTEGER DEFAULT 0,
-            last_castle_attack INTEGER DEFAULT 0,
-            last_pvp_attack INTEGER DEFAULT 0,
-            last_gacha INTEGER DEFAULT 0,
-            season_points INTEGER DEFAULT 0,
-            generals_json TEXT DEFAULT '[]',
-            banned INTEGER DEFAULT 0,
-            ban_reason TEXT DEFAULT '',
-            alliance_id INTEGER,
-            joined_at INTEGER DEFAULT 0,
-            last_seen INTEGER DEFAULT 0
+        cur.execute("""
+
+        CREATE TABLE IF NOT EXISTS message_owners (
+            chat_id INTEGER,
+            message_id INTEGER,
+            user_id INTEGER,
+            created_at INTEGER,
+            PRIMARY KEY (chat_id, message_id)
         )
-    """)
+        """)
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                empire_name TEXT UNIQUE,
+                level INTEGER DEFAULT 1,
+                exp INTEGER DEFAULT 0,
+                coins INTEGER DEFAULT 500,
+                wood INTEGER DEFAULT 400,
+                stone INTEGER DEFAULT 350,
+                food INTEGER DEFAULT 600,
+                total_soldiers INTEGER DEFAULT 0,
+                attack_power INTEGER DEFAULT 0,
+                defense_power INTEGER DEFAULT 0,
+                last_production INTEGER DEFAULT 0,
+                last_castle_attack INTEGER DEFAULT 0,
+                last_pvp_attack INTEGER DEFAULT 0,
+                last_gacha INTEGER DEFAULT 0,
+                season_points INTEGER DEFAULT 0,
+                generals_json TEXT DEFAULT '[]',
+                banned INTEGER DEFAULT 0,
+                ban_reason TEXT DEFAULT '',
+                alliance_id INTEGER,
+                joined_at INTEGER DEFAULT 0,
+                last_seen INTEGER DEFAULT 0
+            )
+        """)
 
 
-    # اگر جدول از قبل وجود داشته و ستون empire_name ندارد، اضافه کن
-    add_column_if_not_exists(conn, 'users', 'empire_name', 'TEXT')
-    # این خط را اضافه کن:
-    add_column_if_not_exists(conn, 'users', 'current_tactic', 'TEXT')
+        # اگر جدول از قبل وجود داشته و ستون empire_name ندارد، اضافه کن
+        add_column_if_not_exists(conn, 'users', 'empire_name', 'TEXT')
+        # این خط را اضافه کن:
+        add_column_if_not_exists(conn, 'users', 'current_tactic', 'TEXT')
+        add_column_if_not_exists(conn, 'users', 'current_action', 'TEXT')
+        add_column_if_not_exists(conn, 'users', 'action_data', 'TEXT')
     
 
 
-    # ساخت ایندکس یکتا برای اطمینان از یکتایی نام امپراتوری
-    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_empire_name ON users(empire_name)")
+        # ساخت ایندکس یکتا برای اطمینان از یکتایی نام امپراتوری
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_empire_name ON users(empire_name)")
 
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS army_units (
-            user_id INTEGER,
-            unit_type TEXT,
-            count INTEGER DEFAULT 0,
-            level INTEGER DEFAULT 1,
-            PRIMARY KEY (user_id, unit_type),
-            FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-        )
-    """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS army_units (
+                user_id INTEGER,
+                unit_type TEXT,
+                count INTEGER DEFAULT 0,
+                level INTEGER DEFAULT 1,
+                PRIMARY KEY (user_id, unit_type),
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+        """)
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS buildings (
-            user_id INTEGER PRIMARY KEY,
-            wall_level INTEGER DEFAULT 1,
-            barracks_level INTEGER DEFAULT 1,
-            farm_level INTEGER DEFAULT 1,
-            sawmill_level INTEGER DEFAULT 1,
-            quarry_level INTEGER DEFAULT 1,
-            treasury_level INTEGER DEFAULT 1,
-            storage_level INTEGER DEFAULT 1,
-            FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-        )
-    """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS buildings (
+                user_id INTEGER PRIMARY KEY,
+                wall_level INTEGER DEFAULT 1,
+                barracks_level INTEGER DEFAULT 1,
+                farm_level INTEGER DEFAULT 1,
+                sawmill_level INTEGER DEFAULT 1,
+                quarry_level INTEGER DEFAULT 1,
+                treasury_level INTEGER DEFAULT 1,
+                storage_level INTEGER DEFAULT 1,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+        """)
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS castles (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT,
-            soldiers INTEGER DEFAULT 20,
-            reward_coins INTEGER DEFAULT 100,
-            reward_wood INTEGER DEFAULT 80,
-            reward_stone INTEGER DEFAULT 60,
-            reward_food INTEGER DEFAULT 120,
-            expires_at INTEGER DEFAULT 0,
-            created_at INTEGER DEFAULT 0
-        )
-    """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS castles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                soldiers INTEGER DEFAULT 20,
+                reward_coins INTEGER DEFAULT 100,
+                reward_wood INTEGER DEFAULT 80,
+                reward_stone INTEGER DEFAULT 60,
+                reward_food INTEGER DEFAULT 120,
+                expires_at INTEGER DEFAULT 0,
+                created_at INTEGER DEFAULT 0
+            )
+        """)
 	
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS battles (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            attacker_id INTEGER,
-            defender_id INTEGER,
-            attacker_units_json TEXT,
-            defender_units_json TEXT,
-            winner_id INTEGER,
-            attacker_losses_json TEXT,
-            defender_losses_json TEXT,
-            coins_looted INTEGER DEFAULT 0,
-            wood_looted INTEGER DEFAULT 0,
-            stone_looted INTEGER DEFAULT 0,
-            food_looted INTEGER DEFAULT 0,
-            created_at INTEGER DEFAULT 0,
-            FOREIGN KEY (attacker_id) REFERENCES users(user_id) ON DELETE SET NULL,
-            FOREIGN KEY (defender_id) REFERENCES users(user_id) ON DELETE SET NULL
-        )
-    """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS battles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                attacker_id INTEGER,
+                defender_id INTEGER,
+                attacker_units_json TEXT,
+                defender_units_json TEXT,
+                winner_id INTEGER,
+                attacker_losses_json TEXT,
+                defender_losses_json TEXT,
+                coins_looted INTEGER DEFAULT 0,
+                wood_looted INTEGER DEFAULT 0,
+                stone_looted INTEGER DEFAULT 0,
+                food_looted INTEGER DEFAULT 0,
+                created_at INTEGER DEFAULT 0,
+                FOREIGN KEY (attacker_id) REFERENCES users(user_id) ON DELETE SET NULL,
+                FOREIGN KEY (defender_id) REFERENCES users(user_id) ON DELETE SET NULL
+            )
+        """)
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS alliances (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT,
-            leader_id INTEGER,
-            level INTEGER DEFAULT 1,
-            treasury_coins INTEGER DEFAULT 0,
-            treasury_wood INTEGER DEFAULT 0,
-            treasury_stone INTEGER DEFAULT 0,
-            treasury_food INTEGER DEFAULT 0,
-            territory TEXT DEFAULT '{}',
-            created_at INTEGER DEFAULT 0
-        )
-    """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS alliances (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                leader_id INTEGER,
+                level INTEGER DEFAULT 1,
+                treasury_coins INTEGER DEFAULT 0,
+                treasury_wood INTEGER DEFAULT 0,
+                treasury_stone INTEGER DEFAULT 0,
+                treasury_food INTEGER DEFAULT 0,
+                territory TEXT DEFAULT '{}',
+                created_at INTEGER DEFAULT 0
+            )
+        """)
 
-    # ======= این دو خط باید دقیقاً اینجا قرار بگیرن =======
-    add_column_if_not_exists(conn, 'alliances', 'capacity', 'INTEGER DEFAULT 5')
-    add_column_if_not_exists(conn, 'alliances', 'captures', 'INTEGER DEFAULT 0')
-    # ===================================================
+        # ======= این دو خط باید دقیقاً اینجا قرار بگیرن =======
+        add_column_if_not_exists(conn, 'alliances', 'capacity', 'INTEGER DEFAULT 5')
+        add_column_if_not_exists(conn, 'alliances', 'captures', 'INTEGER DEFAULT 0')
+        # ===================================================
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS alliance_members (
-            alliance_id INTEGER,
-            user_id INTEGER,
-            role TEXT DEFAULT 'member',
-            joined_at INTEGER DEFAULT 0,
-            PRIMARY KEY (alliance_id, user_id),
-            FOREIGN KEY (alliance_id) REFERENCES alliances(id) ON DELETE CASCADE,
-            FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-        )
-    """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS alliance_members (
+                alliance_id INTEGER,
+                user_id INTEGER,
+                role TEXT DEFAULT 'member',
+                joined_at INTEGER DEFAULT 0,
+                PRIMARY KEY (alliance_id, user_id),
+                FOREIGN KEY (alliance_id) REFERENCES alliances(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+        """)
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS market_offers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            seller_id INTEGER,
-            item_type TEXT,
-            quantity INTEGER,
-            price_coins INTEGER,
-            active INTEGER DEFAULT 1,
-            created_at INTEGER DEFAULT 0,
-            FOREIGN KEY (seller_id) REFERENCES users(user_id) ON DELETE CASCADE
-        )
-    """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS market_offers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                seller_id INTEGER,
+                item_type TEXT,
+                quantity INTEGER,
+                price_coins INTEGER,
+                active INTEGER DEFAULT 1,
+                created_at INTEGER DEFAULT 0,
+                FOREIGN KEY (seller_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+        """)
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS bounties (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            target_id INTEGER,
-            issuer_id INTEGER,
-            amount_coins INTEGER,
-            active INTEGER DEFAULT 1,
-            created_at INTEGER DEFAULT 0,
-            FOREIGN KEY (target_id) REFERENCES users(user_id) ON DELETE CASCADE,
-            FOREIGN KEY (issuer_id) REFERENCES users(user_id) ON DELETE CASCADE
-        )
-    """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS bounties (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                target_id INTEGER,
+                issuer_id INTEGER,
+                amount_coins INTEGER,
+                active INTEGER DEFAULT 1,
+                created_at INTEGER DEFAULT 0,
+                FOREIGN KEY (target_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                FOREIGN KEY (issuer_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+        """)
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS world_boss (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT,
-            hp INTEGER,
-            max_hp INTEGER,
-            level INTEGER DEFAULT 1,
-            active INTEGER DEFAULT 1,
-            created_at INTEGER DEFAULT 0
-        )
-    """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS world_boss (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                hp INTEGER,
+                max_hp INTEGER,
+                level INTEGER DEFAULT 1,
+                active INTEGER DEFAULT 1,
+                created_at INTEGER DEFAULT 0
+            )
+        """)
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS boss_attacks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            boss_id INTEGER,
-            user_id INTEGER,
-            damage INTEGER,
-            created_at INTEGER DEFAULT 0,
-            FOREIGN KEY (boss_id) REFERENCES world_boss(id) ON DELETE CASCADE,
-            FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-        )
-    """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS boss_attacks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                boss_id INTEGER,
+                user_id INTEGER,
+                damage INTEGER,
+                created_at INTEGER DEFAULT 0,
+                FOREIGN KEY (boss_id) REFERENCES world_boss(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+        """)
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS generals (
-            user_id INTEGER,
-            general_id TEXT,
-            name TEXT,
-            bonus_type TEXT,
-            bonus_value REAL,
-            level INTEGER DEFAULT 1,
-            PRIMARY KEY (user_id, general_id),
-            FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-        )
-    """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS generals (
+                user_id INTEGER,
+                general_id TEXT,
+                name TEXT,
+                bonus_type TEXT,
+                bonus_value REAL,
+                level INTEGER DEFAULT 1,
+                PRIMARY KEY (user_id, general_id),
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+        """)
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS tactics (
-            battle_id INTEGER,
-            attacker_tactic TEXT,
-            defender_tactic TEXT,
-            PRIMARY KEY (battle_id),
-            FOREIGN KEY (battle_id) REFERENCES battles(id) ON DELETE CASCADE
-        )
-    """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS tactics (
+                battle_id INTEGER,
+                attacker_tactic TEXT,
+                defender_tactic TEXT,
+                PRIMARY KEY (battle_id),
+                FOREIGN KEY (battle_id) REFERENCES battles(id) ON DELETE CASCADE
+            )
+        """)
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS tickets (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            text TEXT,
-            answered INTEGER DEFAULT 0,
-            created_at INTEGER DEFAULT 0
-        )
-    """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS tickets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                text TEXT,
+                answered INTEGER DEFAULT 0,
+                created_at INTEGER DEFAULT 0
+            )
+        """)
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS group_settings (
-            chat_id INTEGER PRIMARY KEY,
-            alliance_id INTEGER,
-            allow_spawn INTEGER DEFAULT 1,
-            spam_level INTEGER DEFAULT 1
-        )
-    """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS group_settings (
+                chat_id INTEGER PRIMARY KEY,
+                alliance_id INTEGER,
+                allow_spawn INTEGER DEFAULT 1,
+                spam_level INTEGER DEFAULT 1
+            )
+        """)
 
-    # جدول جدید برای تنظیمات کلی ربات
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS bot_settings (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )
-    """)
+        # جدول جدید برای تنظیمات کلی ربات
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS bot_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
 
-    conn.commit()
-    conn.close()
 
 init_db()
 
@@ -304,119 +323,104 @@ init_db()
 # ============================================================
 def get_user(user_id: int) -> Optional[Dict[str, Any]]:
     """دریافت اطلاعات کاربر و به‌روزرسانی خودکار تولید منابع"""
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-    row = cur.fetchone()
-    if not row:
-        conn.close()
-        return None
-    user = dict(row)
-    ensure_production(user_id, user)
-    # دریافت دوباره بعد از به‌روزرسانی
-    cur.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-    user = dict(cur.fetchone())
-    conn.close()
-    return user
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        user = dict(row)
+        ensure_production(user_id, user)
+        # دریافت دوباره بعد از به‌روزرسانی
+        cur.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+        user = dict(cur.fetchone())
+        return user
 
 def get_user_raw(user_id: int) -> Optional[Dict[str, Any]]:
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-    row = cur.fetchone()
-    conn.close()
-    return dict(row) if row else None
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
 
 def get_user_by_empire_name(name: str) -> Optional[Dict[str, Any]]:
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM users WHERE empire_name = ?", (name,))
-    row = cur.fetchone()
-    conn.close()
-    return dict(row) if row else None
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM users WHERE empire_name = ?", (name,))
+        row = cur.fetchone()
+        return dict(row) if row else None
 
 def update_user(user_id: int, **kwargs) -> None:
-    conn = get_connection()
-    cur = conn.cursor()
-    if kwargs:
-        keys = ", ".join([f"{k} = ?" for k in kwargs.keys()])
-        values = list(kwargs.values()) + [user_id]
-        cur.execute(f"UPDATE users SET {keys} WHERE user_id = ?", values)
-        conn.commit()
-    conn.close()
+    with get_connection() as conn:
+        cur = conn.cursor()
+        if kwargs:
+            keys = ", ".join([f"{k} = ?" for k in kwargs.keys()])
+            values = list(kwargs.values()) + [user_id]
+            cur.execute(f"UPDATE users SET {keys} WHERE user_id = ?", values)
 
 def get_buildings(user_id: int) -> Dict[str, Any]:
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM buildings WHERE user_id = ?", (user_id,))
-    row = cur.fetchone()
-    if row:
-        result = dict(row)
-    else:
-        cur.execute("INSERT OR IGNORE INTO buildings (user_id) VALUES (?)", (user_id,))
-        conn.commit()
-        result = {"user_id": user_id, "wall_level": 1, "barracks_level": 1, "farm_level": 1,
-                  "sawmill_level": 1, "quarry_level": 1, "treasury_level": 1, "storage_level": 1}
-    conn.close()
-    return result
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM buildings WHERE user_id = ?", (user_id,))
+        row = cur.fetchone()
+        if row:
+            result = dict(row)
+        else:
+            cur.execute("INSERT OR IGNORE INTO buildings (user_id) VALUES (?)", (user_id,))
+            result = {"user_id": user_id, "wall_level": 1, "barracks_level": 1, "farm_level": 1,
+                      "sawmill_level": 1, "quarry_level": 1, "treasury_level": 1, "storage_level": 1}
+        return result
 
 def update_building(user_id: int, building: str, value: int) -> None:
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(f"UPDATE buildings SET {building} = ? WHERE user_id = ?", (value, user_id))
-    conn.commit()
-    conn.close()
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(f"UPDATE buildings SET {building} = ? WHERE user_id = ?", (value, user_id))
 
 def get_army_units(user_id: int) -> Dict[str, Dict[str, int]]:
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT unit_type, count, level FROM army_units WHERE user_id = ?", (user_id,))
-    rows = cur.fetchall()
-    conn.close()
-    result = {}
-    for r in rows:
-        result[r['unit_type']] = {'count': r['count'], 'level': r['level']}
-    return result
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT unit_type, count, level FROM army_units WHERE user_id = ?", (user_id,))
+        rows = cur.fetchall()
+        result = {}
+        for r in rows:
+            result[r['unit_type']] = {'count': r['count'], 'level': r['level']}
+        return result
 
 def update_army_unit(user_id: int, unit_type: str, count_delta: int = 0, level_delta: int = 0) -> None:
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT count, level FROM army_units WHERE user_id = ? AND unit_type = ?", (user_id, unit_type))
-    row = cur.fetchone()
-    if row:
-        new_count = max(0, row['count'] + count_delta)
-        new_level = max(1, row['level'] + level_delta)
-        cur.execute("UPDATE army_units SET count = ?, level = ? WHERE user_id = ? AND unit_type = ?",
-                    (new_count, new_level, user_id, unit_type))
-    else:
-        cur.execute("INSERT INTO army_units (user_id, unit_type, count, level) VALUES (?, ?, ?, ?)",
-                    (user_id, unit_type, max(0, count_delta), 1 + level_delta))
-    conn.commit()
-    conn.close()
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT count, level FROM army_units WHERE user_id = ? AND unit_type = ?", (user_id, unit_type))
+        row = cur.fetchone()
+        if row:
+            new_count = max(0, row['count'] + count_delta)
+            new_level = max(1, row['level'] + level_delta)
+            cur.execute("UPDATE army_units SET count = ?, level = ? WHERE user_id = ? AND unit_type = ?",
+                        (new_count, new_level, user_id, unit_type))
+        else:
+            cur.execute("INSERT INTO army_units (user_id, unit_type, count, level) VALUES (?, ?, ?, ?)",
+                        (user_id, unit_type, max(0, count_delta), 1 + level_delta))
 
 def get_alliance(user_id: int) -> Optional[Dict[str, Any]]:
     user = get_user(user_id)
     if not user or not user.get('alliance_id'):
         return None
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM alliances WHERE id = ?", (user['alliance_id'],))
-    row = cur.fetchone()
-    conn.close()
-    return dict(row) if row else None
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM alliances WHERE id = ?", (user['alliance_id'],))
+        row = cur.fetchone()
+        return dict(row) if row else None
 
 def get_alliance_members(alliance_id: int) -> List[Dict[str, Any]]:
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT u.user_id, u.username, u.first_name, u.empire_name, u.level, am.role
-        FROM alliance_members am
-        JOIN users u ON u.user_id = am.user_id
-        WHERE am.alliance_id = ?
-    """, (alliance_id,))
-    rows = cur.fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT u.user_id, u.username, u.first_name, u.empire_name, u.level, am.role
+            FROM alliance_members am
+            JOIN users u ON u.user_id = am.user_id
+            WHERE am.alliance_id = ?
+        """, (alliance_id,))
+        rows = cur.fetchall()
+        return [dict(r) for r in rows]
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
@@ -479,19 +483,17 @@ def ensure_production(user_id: int, user: Optional[Dict[str, Any]] = None) -> No
     stone_add = intervals * (BASE_PRODUCTION_STONE + buildings['quarry_level'] * 7)
     food_add = intervals * (BASE_PRODUCTION_FOOD + buildings['farm_level'] * 12)
     new_last = last_prod + int(intervals * PRODUCTION_INTERVAL_HOURS * 3600)
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        UPDATE users SET 
-        coins = coins + ?, 
-        wood = wood + ?, 
-        stone = stone + ?, 
-        food = food + ?, 
-        last_production = ?
-        WHERE user_id = ?
-    """, (coins_add, wood_add, stone_add, food_add, new_last, user_id))
-    conn.commit()
-    conn.close()
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE users SET
+            coins = coins + ?,
+            wood = wood + ?,
+            stone = stone + ?,
+            food = food + ?,
+            last_production = ?
+            WHERE user_id = ?
+        """, (coins_add, wood_add, stone_add, food_add, new_last, user_id))
 
 # ============================================================
 # 🎨 دکمه‌های شیشه‌ای (به‌همراه استایل بصری با ایموجی)
@@ -568,44 +570,38 @@ CASTLE_NAMES = [
 
 def spawn_castles(count: int = 3) -> None:
     """ایجاد قلعه‌های متروکه تصادفی"""
-    conn = get_connection()
-    cur = conn.cursor()
-    for _ in range(count):
-        name = random.choice(CASTLE_NAMES)
-        soldiers = random.randint(10, 50)
-        reward_coins = random.randint(50, 200) + soldiers * 2
-        reward_wood = random.randint(30, 120)
-        reward_stone = random.randint(20, 80)
-        reward_food = random.randint(60, 200)
-        expires_at = int(time.time()) + CASTLE_SPAWN_INTERVAL_HOURS * 3600
-        cur.execute("""
-            INSERT INTO castles (name, soldiers, reward_coins, reward_wood, reward_stone, reward_food, expires_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (name, soldiers, reward_coins, reward_wood, reward_stone, reward_food, expires_at, int(time.time())))
-    conn.commit()
-    conn.close()
+    with get_connection() as conn:
+        cur = conn.cursor()
+        for _ in range(count):
+            name = random.choice(CASTLE_NAMES)
+            soldiers = random.randint(10, 50)
+            reward_coins = random.randint(50, 200) + soldiers * 2
+            reward_wood = random.randint(30, 120)
+            reward_stone = random.randint(20, 80)
+            reward_food = random.randint(60, 200)
+            expires_at = int(time.time()) + CASTLE_SPAWN_INTERVAL_HOURS * 3600
+            cur.execute("""
+                INSERT INTO castles (name, soldiers, reward_coins, reward_wood, reward_stone, reward_food, expires_at, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (name, soldiers, reward_coins, reward_wood, reward_stone, reward_food, expires_at, int(time.time())))
 
 def get_active_castles() -> List[Dict[str, Any]]:
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM castles WHERE expires_at > ?", (int(time.time()),))
-    rows = cur.fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM castles WHERE expires_at > ?", (int(time.time()),))
+        rows = cur.fetchall()
+        return [dict(r) for r in rows]
 
 def get_castle(castle_id: int) -> Optional[Dict[str, Any]]:
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM castles WHERE id = ?", (castle_id,))
-    row = cur.fetchone()
-    conn.close()
-    return dict(row) if row else None
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM castles WHERE id = ?", (castle_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
 
 def delete_castle(castle_id: int) -> None:
-    conn = get_connection()
-    conn.execute("DELETE FROM castles WHERE id = ?", (castle_id,))
-    conn.commit()
-    conn.close()
+    with get_connection() as conn:
+        conn.execute("DELETE FROM castles WHERE id = ?", (castle_id,))
 
 # ============================================================
 # ⚔️ محاسبات نبرد
@@ -768,41 +764,36 @@ def simulate_battle(attacker_id: int, defender_id: int) -> Dict[str, Any]:
                         food=attacker_res['food'] + food_looted)
 
     # ثبت نبرد
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO battles (attacker_id, defender_id, attacker_units_json, defender_units_json,
-                           winner_id, attacker_losses_json, defender_losses_json,
-                           coins_looted, wood_looted, stone_looted, food_looted, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        attacker_id, defender_id,
-        json.dumps(attacker_units), json.dumps(defender_units),
-        attacker_id if attacker_win else defender_id,
-        json.dumps(attacker_losses), json.dumps(defender_losses),
-        coins_looted, wood_looted, stone_looted, food_looted, int(time.time())
-    ))
-    battle_id = cur.lastrowid
-    conn.commit()
-    conn.close()
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO battles (attacker_id, defender_id, attacker_units_json, defender_units_json,
+                               winner_id, attacker_losses_json, defender_losses_json,
+                               coins_looted, wood_looted, stone_looted, food_looted, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            attacker_id, defender_id,
+            json.dumps(attacker_units), json.dumps(defender_units),
+            attacker_id if attacker_win else defender_id,
+            json.dumps(attacker_losses), json.dumps(defender_losses),
+            coins_looted, wood_looted, stone_looted, food_looted, int(time.time())
+        ))
+        battle_id = cur.lastrowid
 
-    # ثبت تاکتیک‌ها
-    conn = get_connection()
-    conn.execute("INSERT INTO tactics (battle_id, attacker_tactic, defender_tactic) VALUES (?, ?, ?)",
-                 (battle_id, attacker_tactic, defender_tactic))
-    conn.commit()
-    conn.close()
+        # ثبت تاکتیک‌ها
+        conn.execute("INSERT INTO tactics (battle_id, attacker_tactic, defender_tactic) VALUES (?, ?, ?)",
+                     (battle_id, attacker_tactic, defender_tactic))
 
-    return {
-        'battle_id': battle_id,
-        'winner': attacker_id if attacker_win else defender_id,
-        'attacker_losses': attacker_losses,
-        'defender_losses': defender_losses,
-        'coins_looted': coins_looted,
-        'wood_looted': wood_looted,
-        'stone_looted': stone_looted,
-        'food_looted': food_looted
-    }
+        return {
+            'battle_id': battle_id,
+            'winner': attacker_id if attacker_win else defender_id,
+            'attacker_losses': attacker_losses,
+            'defender_losses': defender_losses,
+            'coins_looted': coins_looted,
+            'wood_looted': wood_looted,
+            'stone_looted': stone_looted,
+            'food_looted': food_looted
+        }
 
 # ============================================================
 # 👥 سیستم اتحادها
@@ -811,15 +802,13 @@ def create_alliance(user_id: int, name: str) -> bool:
     user = get_user(user_id)
     if not user or user.get('alliance_id'):
         return False
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("INSERT INTO alliances (name, leader_id, created_at) VALUES (?, ?, ?)",
-                (name, user_id, int(time.time())))
-    alliance_id = cur.lastrowid
-    cur.execute("INSERT INTO alliance_members (alliance_id, user_id, role, joined_at) VALUES (?, ?, 'leader', ?)",
-                (alliance_id, user_id, int(time.time())))
-    conn.commit()
-    conn.close()
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO alliances (name, leader_id, created_at) VALUES (?, ?, ?)",
+                    (name, user_id, int(time.time())))
+        alliance_id = cur.lastrowid
+        cur.execute("INSERT INTO alliance_members (alliance_id, user_id, role, joined_at) VALUES (?, ?, 'leader', ?)",
+                    (alliance_id, user_id, int(time.time())))
     update_user(user_id, alliance_id=alliance_id)
     return True
 
@@ -827,16 +816,13 @@ def join_alliance(user_id: int, alliance_id: int) -> bool:
     user = get_user(user_id)
     if not user or user.get('alliance_id'):
         return False
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM alliances WHERE id = ?", (alliance_id,))
-    if not cur.fetchone():
-        conn.close()
-        return False
-    cur.execute("INSERT OR IGNORE INTO alliance_members (alliance_id, user_id, role, joined_at) VALUES (?, ?, 'member', ?)",
-                (alliance_id, user_id, int(time.time())))
-    conn.commit()
-    conn.close()
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM alliances WHERE id = ?", (alliance_id,))
+        if not cur.fetchone():
+            return False
+        cur.execute("INSERT OR IGNORE INTO alliance_members (alliance_id, user_id, role, joined_at) VALUES (?, ?, 'member', ?)",
+                    (alliance_id, user_id, int(time.time())))
     update_user(user_id, alliance_id=alliance_id)
     return True
 
@@ -852,14 +838,12 @@ def donate_to_alliance(user_id: int, resource_type: str, amount: int) -> bool:
     # کسر از کاربر
     update_user(user_id, **{resource_type: user[resource_type] - amount})
     # افزودن به خزانه اتحاد
-    conn = get_connection()
-    cur = conn.cursor()
-    treasury_field = f"treasury_{resource_type}"
-    cur.execute(f"UPDATE alliances SET {treasury_field} = {treasury_field} + ? WHERE id = ?",
-                (amount, alliance['id']))
-    conn.commit()
-    conn.close()
-    return True
+    with get_connection() as conn:
+        cur = conn.cursor()
+        treasury_field = f"treasury_{resource_type}"
+        cur.execute(f"UPDATE alliances SET {treasury_field} = {treasury_field} + ? WHERE id = ?",
+                    (amount, alliance['id']))
+        return True
 
 # ============================================================
 # 🧙‍♂️ سیستم ژنرال‌ها (Gacha)
@@ -930,12 +914,10 @@ def create_market_offer(seller_id: int, item_type: str, quantity: int, price: in
     if user[item_type] < quantity:
         return False
     update_user(seller_id, **{item_type: user[item_type] - quantity})
-    conn = get_connection()
-    conn.execute("INSERT INTO market_offers (seller_id, item_type, quantity, price_coins, created_at) VALUES (?, ?, ?, ?, ?)",
-                 (seller_id, item_type, quantity, price, int(time.time())))
-    conn.commit()
-    conn.close()
-    return True
+    with get_connection() as conn:
+        conn.execute("INSERT INTO market_offers (seller_id, item_type, quantity, price_coins, created_at) VALUES (?, ?, ?, ?, ?)",
+                     (seller_id, item_type, quantity, price, int(time.time())))
+        return True
 
 # ============================================================
 # 💰 سیستم جایزه‌بگیر (Bounty)
@@ -945,56 +927,46 @@ def place_bounty(target_id: int, issuer_id: int, amount: int) -> bool:
     if not issuer or issuer['coins'] < amount:
         return False
     update_user(issuer_id, coins=issuer['coins'] - amount)
-    conn = get_connection()
-    conn.execute("INSERT INTO bounties (target_id, issuer_id, amount_coins, created_at) VALUES (?, ?, ?, ?)",
-                 (target_id, issuer_id, amount, int(time.time())))
-    conn.commit()
-    conn.close()
-    return True
+    with get_connection() as conn:
+        conn.execute("INSERT INTO bounties (target_id, issuer_id, amount_coins, created_at) VALUES (?, ?, ?, ?)",
+                     (target_id, issuer_id, amount, int(time.time())))
+        return True
 
 def claim_bounty(bounty_id: int, hunter_id: int) -> bool:
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM bounties WHERE id = ? AND active = 1", (bounty_id,))
-    bounty = cur.fetchone()
-    if not bounty:
-        conn.close()
-        return False
-    bounty = dict(bounty)
-    # اینجا شبیه‌سازی حمله یا شرطی ساده: اگر هانتر ارتش بیشتری دارد
-    hunter = get_user(hunter_id)
-    target = get_user(bounty['target_id'])
-    if not hunter or not target:
-        conn.close()
-        return False
-    if hunter['total_soldiers'] <= target['total_soldiers'] * 1.2:
-        conn.close()
-        return False
-    update_user(hunter_id, coins=hunter['coins'] + bounty['amount_coins'])
-    cur.execute("UPDATE bounties SET active = 0 WHERE id = ?", (bounty_id,))
-    conn.commit()
-    conn.close()
-    return True
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM bounties WHERE id = ? AND active = 1", (bounty_id,))
+        bounty = cur.fetchone()
+        if not bounty:
+            return False
+        bounty = dict(bounty)
+        # اینجا شبیه‌سازی حمله یا شرطی ساده: اگر هانتر ارتش بیشتری دارد
+        hunter = get_user(hunter_id)
+        target = get_user(bounty['target_id'])
+        if not hunter or not target:
+            return False
+        if hunter['total_soldiers'] <= target['total_soldiers'] * 1.2:
+            return False
+        update_user(hunter_id, coins=hunter['coins'] + bounty['amount_coins'])
+        cur.execute("UPDATE bounties SET active = 0 WHERE id = ?", (bounty_id,))
+        return True
 
 # ============================================================
 # 🌋 سیستم باس جهانی و رویدادهای سراسری
 # ============================================================
 def spawn_world_boss(level: int = 1) -> None:
     hp = 10000 * (level ** 1.5)
-    conn = get_connection()
-    conn.execute("UPDATE world_boss SET active = 0 WHERE active = 1")
-    conn.execute("INSERT INTO world_boss (name, hp, max_hp, level, active, created_at) VALUES (?, ?, ?, ?, 1, ?)",
-                 (f"اهریمن سطح {level}", int(hp), int(hp), level, int(time.time())))
-    conn.commit()
-    conn.close()
+    with get_connection() as conn:
+        conn.execute("UPDATE world_boss SET active = 0 WHERE active = 1")
+        conn.execute("INSERT INTO world_boss (name, hp, max_hp, level, active, created_at) VALUES (?, ?, ?, ?, 1, ?)",
+                     (f"اهریمن سطح {level}", int(hp), int(hp), level, int(time.time())))
 
 def get_active_world_boss() -> Optional[Dict[str, Any]]:
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM world_boss WHERE active = 1 ORDER BY id DESC LIMIT 1")
-    row = cur.fetchone()
-    conn.close()
-    return dict(row) if row else None
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM world_boss WHERE active = 1 ORDER BY id DESC LIMIT 1")
+        row = cur.fetchone()
+        return dict(row) if row else None
 
 def attack_world_boss(user_id: int, soldiers: int) -> Dict[str, Any]:
     boss = get_active_world_boss()
@@ -1005,9 +977,6 @@ def attack_world_boss(user_id: int, soldiers: int) -> Dict[str, Any]:
         return {'success': False, 'message': 'سرباز کافی ندارید'}
     # محاسبه آسیب
     damage = soldiers * random.randint(8, 15)
-    # کسر سربازان اعزامی (تلفات)
-    conn = get_connection()
-    cur = conn.cursor()
     # فرض می‌کنیم از کل واحدها به نسبت کم می‌کنیم
     units = get_army_units(user_id)
     total = sum(u['count'] for u in units.values())
@@ -1019,12 +988,14 @@ def attack_world_boss(user_id: int, soldiers: int) -> Dict[str, Any]:
                 update_army_unit(user_id, unit_type, count_delta=-loss)
     update_army_power_fields(user_id)
     new_hp = max(0, boss['hp'] - damage)
-    cur.execute("UPDATE world_boss SET hp = ? WHERE id = ?", (new_hp, boss['id']))
-    cur.execute("INSERT INTO boss_attacks (boss_id, user_id, damage, created_at) VALUES (?, ?, ?, ?)",
-                (boss['id'], user_id, damage, int(time.time())))
-    conn.commit()
-    conn.close()
-    return {'success': True, 'damage': damage, 'new_hp': new_hp, 'max_hp': boss['max_hp']}
+
+    # کسر سربازان اعزامی (تلفات)
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE world_boss SET hp = ? WHERE id = ?", (new_hp, boss['id']))
+        cur.execute("INSERT INTO boss_attacks (boss_id, user_id, damage, created_at) VALUES (?, ?, ?, ?)",
+                    (boss['id'], user_id, damage, int(time.time())))
+        return {'success': True, 'damage': damage, 'new_hp': new_hp, 'max_hp': boss['max_hp']}
 
 # ============================================================
 # 👑 پنل مدیریت (Admin Panel)
@@ -1066,18 +1037,15 @@ def main_menu(user_id: int) -> InlineKeyboardMarkup:
 # توابع سیستم عضویت اجباری
 # -----------------------------------------------
 def set_force_join_channel(channel_id: str) -> None:
-    conn = get_connection()
-    conn.execute("INSERT OR REPLACE INTO bot_settings (key, value) VALUES ('force_join', ?)", (channel_id,))
-    conn.commit()
-    conn.close()
+    with get_connection() as conn:
+        conn.execute("INSERT OR REPLACE INTO bot_settings (key, value) VALUES ('force_join', ?)", (channel_id,))
 
 def get_force_join_channel() -> Optional[str]:
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT value FROM bot_settings WHERE key = 'force_join'")
-    row = cur.fetchone()
-    conn.close()
-    return row['value'] if row else None
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM bot_settings WHERE key = 'force_join'")
+        row = cur.fetchone()
+        return row['value'] if row else None
 
 def check_user_joined(user_id: int) -> bool:
     """بررسی می‌کند آیا کاربر در کانال اجباری عضو هست یا نه"""
@@ -1110,7 +1078,7 @@ def process_change_empire_name(message):
     existing = get_user_by_empire_name(new_name)
     if existing and existing['user_id'] != user_id:
         bot.send_message(message.chat.id, "❌ این نام قبلاً استفاده شده است. لطفاً نام دیگری انتخاب کن:")
-        bot.register_next_step_handler(message, process_change_empire_name)
+        set_user_state(user_id, 'process_change_empire_name')
         return
         
     # ثبت نام جدید و کسر سکه
@@ -1118,24 +1086,31 @@ def process_change_empire_name(message):
     bot.send_message(message.chat.id, f"✅ نام امپراطوری شما با موفقیت به «{new_name}» تغییر یافت!\n💰 ۲۰۰ سکه کسر شد.", reply_markup=main_menu(user_id))
 
 def process_admin_force_join(message):
-    if not is_admin_user(message.from_user.id): return
+    user_id = message.from_user.id
+    if not is_admin_user(user_id): return
     text = message.text.strip()
     
     if text == 'لغو':
-        conn = get_connection()
-        conn.execute("DELETE FROM bot_settings WHERE key = 'force_join'")
-        conn.commit()
-        conn.close()
-        bot.send_message(message.chat.id, "✅ عضویت اجباری با موفقیت لغو و غیرفعال شد.")
-        return
+        with get_connection() as conn:
+            conn.execute("DELETE FROM bot_settings WHERE key = 'force_join'")
+            bot.send_message(message.chat.id, "✅ عضویت اجباری با موفقیت لغو و غیرفعال شد.")
+            return
         
     if not text.startswith('@'):
         bot.send_message(message.chat.id, "❌ آیدی کانال حتماً باید با @ شروع شود (مثلاً @MyChannel). دوباره تلاش کن:")
-        bot.register_next_step_handler(message, process_admin_force_join)
+        set_user_state(user_id, 'process_admin_force_join')
         return
         
     set_force_join_channel(text)
     bot.send_message(message.chat.id, f"✅ کانال {text} به عنوان عضویت اجباری ثبت شد.\n⚠️ فراموش نکن که ربات حتماً باید در این کانال **ادمین** باشه تا بتونه اعضا رو تشخیص بده!")
+
+def clear_user_state(user_id: int):
+    update_user(user_id, current_action=None, action_data=None)
+
+def set_user_state(user_id: int, action: str, data: dict = None):
+    import json
+    data_str = json.dumps(data) if data else None
+    update_user(user_id, current_action=action, action_data=data_str)
 
 # ============================================================
 # 🚀 هندلرهای دستوری و پیام
@@ -1143,6 +1118,8 @@ def process_admin_force_join(message):
 @bot.message_handler(commands=['start'])
 def start_command(message):
     user_id = message.from_user.id
+    clear_user_state(user_id)
+
     
     if not check_user_joined(user_id):
         channel = get_force_join_channel()
@@ -1151,15 +1128,12 @@ def start_command(message):
         
     user = get_user_raw(user_id)
     if not user:
-        conn = get_connection()
-        # ... بقیه کدهای تابع ...
+        with get_connection() as conn:
+            conn.execute("""
+                INSERT INTO users (user_id, username, first_name, joined_at, last_production)
+                VALUES (?, ?, ?, ?, ?)
+            """, (user_id, message.from_user.username, message.from_user.first_name, int(time.time()), int(time.time())))
 
-        conn.execute("""
-            INSERT INTO users (user_id, username, first_name, joined_at, last_production)
-            VALUES (?, ?, ?, ?, ?)
-        """, (user_id, message.from_user.username, message.from_user.first_name, int(time.time()), int(time.time())))
-        conn.commit()
-        conn.close()
         get_buildings(user_id)
         user = get_user_raw(user_id)
 
@@ -1168,7 +1142,7 @@ def start_command(message):
         msg = bot.send_message(message.chat.id,
                                "🏰 <b>به دنیای مدیریت منابع خوش آمدی!</b>\n"
                                "برای شروع، نام امپراطوری خود را ارسال کن (یکتا):")
-        bot.register_next_step_handler(msg, process_empire_name)
+        set_user_state(user_id, 'process_empire_name')
         return
 
     # در غیر این صورت منوی اصلی را ارسال یا ویرایش کن
@@ -1185,13 +1159,13 @@ def process_empire_name(message):
     name = message.text.strip()
     if not name:
         bot.send_message(message.chat.id, "❌ نام نمی‌تواند خالی باشد. دوباره تلاش کن:")
-        bot.register_next_step_handler(message, process_empire_name)
+        set_user_state(user_id, 'process_empire_name')
         return
     # بررسی یکتا بودن
     existing = get_user_by_empire_name(name)
     if existing and existing['user_id'] != user_id:
         bot.send_message(message.chat.id, "❌ این نام قبلاً استفاده شده است. لطفاً نام دیگری انتخاب کن:")
-        bot.register_next_step_handler(message, process_empire_name)
+        set_user_state(user_id, 'process_empire_name')
         return
     # ذخیره نام
     update_user(user_id, empire_name=name)
@@ -1216,20 +1190,36 @@ def admin_command(message):
 # ============================================================
 # 🖥️ توابع نمایش پروفایل و منوها (با قابلیت ویرایش همان پیام)
 # ============================================================
+def set_message_owner(chat_id: int, message_id: int, user_id: int):
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO message_owners (chat_id, message_id, user_id, created_at) VALUES (?, ?, ?, ?)",
+            (chat_id, message_id, user_id, int(time.time()))
+        )
+
+def get_message_owner(chat_id: int, message_id: int):
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT user_id FROM message_owners WHERE chat_id = ? AND message_id = ?", (chat_id, message_id))
+        row = cur.fetchone()
+        if row:
+            return row['user_id']
+    return None
+
 def edit_or_send(chat_id, message_id, text, reply_markup, user_id):
     """اگر message_id داده شده باشد، پیام را ویرایش می‌کند، در غیر این صورت پیام جدید می‌فرستد.
     مالکیت پیام را نیز ثبت می‌کند."""
     if message_id:
         try:
             bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=reply_markup)
-            message_owners[(chat_id, message_id)] = user_id
+            set_message_owner(chat_id, message_id, user_id)
         except Exception as e:
             # اگر ویرایش ناموفق بود، پیام جدید بفرست
             msg = bot.send_message(chat_id, text, reply_markup=reply_markup)
-            message_owners[(chat_id, msg.message_id)] = user_id
+            set_message_owner(chat_id, msg.message_id, user_id)
     else:
         msg = bot.send_message(chat_id, text, reply_markup=reply_markup)
-        message_owners[(chat_id, msg.message_id)] = user_id
+        set_message_owner(chat_id, msg.message_id, user_id)
 
 def show_profile(chat_id: int, user_id: int, message_id: Optional[int] = None):
     # بقیه کدهای این تابع همون حالت قبلی باشه...
@@ -1420,31 +1410,30 @@ def show_attack_menu(chat_id: int, user_id: int, message_id: Optional[int] = Non
     edit_or_send(chat_id, message_id, text, markup, user_id)
 
 def show_market_menu(chat_id: int, user_id: int, message_id: Optional[int] = None):
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM market_offers WHERE active = 1 ORDER BY id DESC LIMIT 10")
-    offers = cur.fetchall()
-    text = "🛒 <b>بازار جهانی</b>\n\n"
-    if offers:
-        for o in offers:
-            o = dict(o)
-            if o['item_type'] == 'alliance':
-                cur.execute("SELECT name FROM alliances WHERE id=?", (o['quantity'],))
-                al_res = cur.fetchone()
-                al_name = al_res['name'] if al_res else "اتحاد نامشخص"
-                text += f"🏰 فروش اتحاد: {al_name} (آیدی آفر: {o['id']}) — {format_number(o['price_coins'])} سکه\n"
-            else:
-                text += f"🔹 {o['item_type']} x{format_number(o['quantity'])} (آیدی آفر: {o['id']}) — {format_number(o['price_coins'])} سکه\n"
-    else:
-        text += "هیچ آفری فعال نیست.\n"
-    conn.close()
-    rows = [
-        [inline_btn("➕ ایجاد آفر فروش", "market_create", "success")],
-        [inline_btn("🛍️ خرید آفر", "market_buy", "success")],
-        [inline_btn("🏠 بازگشت", "main_menu", "primary")]
-    ]
-    markup = build_inline_keyboard(rows)
-    edit_or_send(chat_id, message_id, text, markup, user_id)
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM market_offers WHERE active = 1 ORDER BY id DESC LIMIT 10")
+        offers = cur.fetchall()
+        text = "🛒 <b>بازار جهانی</b>\n\n"
+        if offers:
+            for o in offers:
+                o = dict(o)
+                if o['item_type'] == 'alliance':
+                    cur.execute("SELECT name FROM alliances WHERE id=?", (o['quantity'],))
+                    al_res = cur.fetchone()
+                    al_name = al_res['name'] if al_res else "اتحاد نامشخص"
+                    text += f"🏰 فروش اتحاد: {al_name} (آیدی آفر: {o['id']}) — {format_number(o['price_coins'])} سکه\n"
+                else:
+                    text += f"🔹 {o['item_type']} x{format_number(o['quantity'])} (آیدی آفر: {o['id']}) — {format_number(o['price_coins'])} سکه\n"
+        else:
+            text += "هیچ آفری فعال نیست.\n"
+        rows = [
+            [inline_btn("➕ ایجاد آفر فروش", "market_create", "success")],
+            [inline_btn("🛍️ خرید آفر", "market_buy", "success")],
+            [inline_btn("🏠 بازگشت", "main_menu", "primary")]
+        ]
+        markup = build_inline_keyboard(rows)
+        edit_or_send(chat_id, message_id, text, markup, user_id)
 
 def show_alliance_menu(chat_id: int, user_id: int, message_id: Optional[int] = None):
     user = get_user(user_id)
@@ -1523,52 +1512,50 @@ def show_world_boss_menu(chat_id: int, user_id: int, message_id: Optional[int] =
     edit_or_send(chat_id, message_id, text, markup, user_id)
 
 def show_battle_reports(chat_id: int, user_id: int, message_id: Optional[int] = None):
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT * FROM battles WHERE attacker_id = ? OR defender_id = ? ORDER BY id DESC LIMIT 5
-    """, (user_id, user_id))
-    battles = cur.fetchall()
-    conn.close()
-    text = "📜 <b>گزارش‌های جنگ اخیر</b>\n\n"
-    if not battles:
-        text += "هنوز جنگی انجام نداده‌اید.\n"
-    for b in battles:
-        b = dict(b)
-        winner = "شما" if b['winner_id'] == user_id else "دشمن"
-        text += (
-            f"⚔️ نبرد #{b['id']}\n"
-            f"👤 شما: {b['attacker_id'] if b['attacker_id'] == user_id else b['defender_id']}\n"
-            f"🏆 برنده: {winner}\n"
-            f"💰 غنائم: {format_number(b['coins_looted'])} سکه، {format_number(b['wood_looted'])} چوب\n"
-            f"🗡️ تلفات شما: {json.loads(b['attacker_losses_json']) if b['attacker_id'] == user_id else json.loads(b['defender_losses_json'])}\n"
-            f"━━━━━━━━━━━━━━━━\n"
-        )
-    markup = build_inline_keyboard([[inline_btn("🏠 بازگشت", "main_menu", "info")]])
-    edit_or_send(chat_id, message_id, text, markup, user_id)
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT * FROM battles WHERE attacker_id = ? OR defender_id = ? ORDER BY id DESC LIMIT 5
+        """, (user_id, user_id))
+        battles = cur.fetchall()
+        text = "📜 <b>گزارش‌های جنگ اخیر</b>\n\n"
+        if not battles:
+            text += "هنوز جنگی انجام نداده‌اید.\n"
+        for b in battles:
+            b = dict(b)
+            winner = "شما" if b['winner_id'] == user_id else "دشمن"
+            text += (
+                f"⚔️ نبرد #{b['id']}\n"
+                f"👤 شما: {b['attacker_id'] if b['attacker_id'] == user_id else b['defender_id']}\n"
+                f"🏆 برنده: {winner}\n"
+                f"💰 غنائم: {format_number(b['coins_looted'])} سکه، {format_number(b['wood_looted'])} چوب\n"
+                f"🗡️ تلفات شما: {json.loads(b['attacker_losses_json']) if b['attacker_id'] == user_id else json.loads(b['defender_losses_json'])}\n"
+                f"━━━━━━━━━━━━━━━━\n"
+            )
+        markup = build_inline_keyboard([[inline_btn("🏠 بازگشت", "main_menu", "info")]])
+        edit_or_send(chat_id, message_id, text, markup, user_id)
 
 def show_bounty_menu(chat_id: int, user_id: int, message_id: Optional[int] = None):
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM bounties WHERE active = 1 ORDER BY id DESC LIMIT 10")
-    bounties = cur.fetchall()
-    conn.close()
-    text = "💰 <b>جایزه‌بگیر</b>\n\n"
-    if bounties:
-        for b in bounties:
-            b = dict(b)
-            target = get_user_raw(b['target_id'])
-            if target:
-                text += f"🎯 هدف: {get_username_or_name(target)} — جایزه: {format_number(b['amount_coins'])} سکه\n"
-    else:
-        text += "جایزه فعالی وجود ندارد.\n"
-    rows = [
-        [inline_btn("🎯 قرار دادن جایزه روی سر کسی", "bounty_place", "warning")],
-        [inline_btn("⚔️ دریافت جایزه", "bounty_claim", "danger")],
-        [inline_btn("🏠 بازگشت", "main_menu", "info")]
-    ]
-    markup = build_inline_keyboard(rows)
-    edit_or_send(chat_id, message_id, text, markup, user_id)
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM bounties WHERE active = 1 ORDER BY id DESC LIMIT 10")
+        bounties = cur.fetchall()
+        text = "💰 <b>جایزه‌بگیر</b>\n\n"
+        if bounties:
+            for b in bounties:
+                b = dict(b)
+                target = get_user_raw(b['target_id'])
+                if target:
+                    text += f"🎯 هدف: {get_username_or_name(target)} — جایزه: {format_number(b['amount_coins'])} سکه\n"
+        else:
+            text += "جایزه فعالی وجود ندارد.\n"
+        rows = [
+            [inline_btn("🎯 قرار دادن جایزه روی سر کسی", "bounty_place", "warning")],
+            [inline_btn("⚔️ دریافت جایزه", "bounty_claim", "danger")],
+            [inline_btn("🏠 بازگشت", "main_menu", "info")]
+        ]
+        markup = build_inline_keyboard(rows)
+        edit_or_send(chat_id, message_id, text, markup, user_id)
 
 def show_tactics_menu(chat_id: int, user_id: int, message_id: Optional[int] = None):
     user = get_user(user_id)
@@ -1598,29 +1585,29 @@ def show_tactics_menu(chat_id: int, user_id: int, message_id: Optional[int] = No
     edit_or_send(chat_id, message_id, text, markup, user_id)
 def buy_market_offer(buyer_id: int, offer_id: int) -> bool:
     buyer = get_user(buyer_id)
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM market_offers WHERE id = ? AND active = 1", (offer_id,))
-    offer = cur.fetchone()
-    if not buyer or not offer or buyer['coins'] < offer['price_coins']:
-        conn.close()
-        return False
-    offer = dict(offer)
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM market_offers WHERE id = ? AND active = 1", (offer_id,))
+        offer = cur.fetchone()
+        if not buyer or not offer or buyer['coins'] < offer['price_coins']:
+            return False
+        offer = dict(offer)
     
     # خرید اتحاد از بازار
     if offer['item_type'] == 'alliance':
         alliance_id = offer['quantity']
         if buyer.get('alliance_id'): 
-            conn.close()
             return False
-            
+
         update_user(buyer_id, coins=buyer['coins'] - offer['price_coins'])
         seller = get_user_raw(offer['seller_id'])
         if seller: update_user(offer['seller_id'], coins=seller['coins'] + offer['price_coins'])
         
-        cur.execute("UPDATE alliances SET leader_id = ? WHERE id = ?", (buyer_id, alliance_id))
-        cur.execute("UPDATE alliance_members SET role = 'member' WHERE alliance_id = ? AND user_id = ?", (alliance_id, offer['seller_id']))
-        cur.execute("INSERT INTO alliance_members (alliance_id, user_id, role, joined_at) VALUES (?, ?, 'leader', ?)", (alliance_id, buyer_id, int(time.time())))
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("UPDATE alliances SET leader_id = ? WHERE id = ?", (buyer_id, alliance_id))
+            cur.execute("UPDATE alliance_members SET role = 'member' WHERE alliance_id = ? AND user_id = ?", (alliance_id, offer['seller_id']))
+            cur.execute("INSERT INTO alliance_members (alliance_id, user_id, role, joined_at) VALUES (?, ?, 'leader', ?)", (alliance_id, buyer_id, int(time.time())))
         update_user(buyer_id, alliance_id=alliance_id)
     else:
         # خرید منابع عادی
@@ -1628,10 +1615,9 @@ def buy_market_offer(buyer_id: int, offer_id: int) -> bool:
         seller = get_user_raw(offer['seller_id'])
         if seller: update_user(offer['seller_id'], coins=seller['coins'] + offer['price_coins'])
         update_user(buyer_id, **{offer['item_type']: buyer[offer['item_type']] + offer['quantity']})
-        
-    cur.execute("UPDATE market_offers SET active = 0 WHERE id = ?", (offer_id,))
-    conn.commit()
-    conn.close()
+
+    with get_connection() as conn:
+        conn.execute("UPDATE market_offers SET active = 0 WHERE id = ?", (offer_id,))
     return True
 
 def process_recruit_quantity(message, unit_type):
@@ -1676,14 +1662,12 @@ def process_alliance_withdraw(message):
             bot.send_message(message.chat.id, "❌ خزانه اتحاد این مقدار منبع را ندارد.")
             return
         
-        conn = get_connection()
-        conn.execute(f"UPDATE alliances SET {treasury_field} = {treasury_field} - ? WHERE id = ?", (amount, alliance['id']))
-        conn.commit()
-        conn.close()
+        with get_connection() as conn:
+            conn.execute(f"UPDATE alliances SET {treasury_field} = {treasury_field} - ? WHERE id = ?", (amount, alliance['id']))
         
-        user = get_user(user_id)
-        update_user(user_id, **{resource: user[resource] + amount})
-        bot.send_message(message.chat.id, f"✅ مقدار {format_number(amount)} {resource} از خزانه برداشت شد.", reply_markup=main_menu(user_id))
+            user = get_user(user_id)
+            update_user(user_id, **{resource: user[resource] + amount})
+            bot.send_message(message.chat.id, f"✅ مقدار {format_number(amount)} {resource} از خزانه برداشت شد.", reply_markup=main_menu(user_id))
     except:
         bot.send_message(message.chat.id, "❌ فرمت نامعتبر است.")
 
@@ -1719,23 +1703,19 @@ def process_alliance_roles(message):
             bot.send_message(message.chat.id, "❌ کاربری با این نام پیدا نشد.")
             return
         
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM alliance_members WHERE user_id = ? AND alliance_id = ?", (target_user['user_id'], alliance['id']))
-        if not cur.fetchone():
-            bot.send_message(message.chat.id, "❌ این کاربر در اتحاد شما عضو نیست.")
-            conn.close()
-            return
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM alliance_members WHERE user_id = ? AND alliance_id = ?", (target_user['user_id'], alliance['id']))
+            if not cur.fetchone():
+                bot.send_message(message.chat.id, "❌ این کاربر در اتحاد شما عضو نیست.")
+                return
             
-        if target_user['user_id'] == user_id:
-            bot.send_message(message.chat.id, "❌ شما لیدر اتحاد هستید و نمی‌توانید نقش خود را تغییر دهید.")
-            conn.close()
-            return
+            if target_user['user_id'] == user_id:
+                bot.send_message(message.chat.id, "❌ شما لیدر اتحاد هستید و نمی‌توانید نقش خود را تغییر دهید.")
+                return
             
-        conn.execute("UPDATE alliance_members SET role = ? WHERE user_id = ? AND alliance_id = ?", (role, target_user['user_id'], alliance['id']))
-        conn.commit()
-        conn.close()
-        bot.send_message(message.chat.id, f"✅ نقش امپراطوری {emp_name} با موفقیت به «{role}» تغییر یافت.", reply_markup=main_menu(user_id))
+            conn.execute("UPDATE alliance_members SET role = ? WHERE user_id = ? AND alliance_id = ?", (role, target_user['user_id'], alliance['id']))
+            bot.send_message(message.chat.id, f"✅ نقش امپراطوری {emp_name} با موفقیت به «{role}» تغییر یافت.", reply_markup=main_menu(user_id))
     except:
         bot.send_message(message.chat.id, "❌ فرمت نامعتبر است.")
 
@@ -1746,11 +1726,9 @@ def process_alliance_sell(message):
         user_id = message.from_user.id
         alliance = get_alliance(user_id)
         if not alliance or alliance['leader_id'] != user_id: return
-        conn = get_connection()
-        conn.execute("INSERT INTO market_offers (seller_id, item_type, quantity, price_coins, created_at) VALUES (?, 'alliance', ?, ?, ?)", (user_id, alliance['id'], price, int(time.time())))
-        conn.commit()
-        conn.close()
-        bot.send_message(message.chat.id, "✅ اتحاد شما با موفقیت در بازار جهانی برای فروش قرار گرفت!", reply_markup=main_menu(user_id))
+        with get_connection() as conn:
+            conn.execute("INSERT INTO market_offers (seller_id, item_type, quantity, price_coins, created_at) VALUES (?, 'alliance', ?, ?, ?)", (user_id, alliance['id'], price, int(time.time())))
+            bot.send_message(message.chat.id, "✅ اتحاد شما با موفقیت در بازار جهانی برای فروش قرار گرفت!", reply_markup=main_menu(user_id))
     except:
         bot.send_message(message.chat.id, "❌ قیمت نامعتبر است.")
 
@@ -1766,12 +1744,92 @@ def process_alliance_kick(message):
     if target['user_id'] == user_id:
         bot.send_message(message.chat.id, "❌ نمی‌توانی خودت را اخراج کنی!")
         return
-    conn = get_connection()
-    conn.execute("DELETE FROM alliance_members WHERE user_id = ?", (target['user_id'],))
-    conn.execute("UPDATE users SET alliance_id = NULL WHERE user_id = ?", (target['user_id'],))
-    conn.commit()
-    conn.close()
-    bot.send_message(message.chat.id, f"✅ کاربر {target_name} از اتحاد اخراج شد.", reply_markup=main_menu(user_id))
+    with get_connection() as conn:
+        conn.execute("DELETE FROM alliance_members WHERE user_id = ?", (target['user_id'],))
+        conn.execute("UPDATE users SET alliance_id = NULL WHERE user_id = ?", (target['user_id'],))
+        bot.send_message(message.chat.id, f"✅ کاربر {target_name} از اتحاد اخراج شد.", reply_markup=main_menu(user_id))
+
+
+
+@bot.message_handler(content_types=['text'])
+def global_text_handler(message):
+    user_id = message.from_user.id
+    text = message.text.strip().lower()
+
+    # Cancellation check
+    if text in ['لغو', 'انصراف', '❌ لغو', 'cancel']:
+        clear_user_state(user_id)
+        bot.send_message(message.chat.id, "✅ عملیات لغو شد.", reply_markup=main_menu(user_id))
+        return
+
+    user = get_user(user_id)
+    if not user or not user.get('current_action'):
+        return
+
+    action = user['current_action']
+    data_str = user.get('action_data')
+
+    import json
+    action_data = {}
+    if data_str:
+        try:
+            action_data = json.loads(data_str)
+        except:
+            pass
+
+    # Clear state first so they don't get stuck if it crashes
+    clear_user_state(user_id)
+
+    # Route to appropriate function
+    if action == 'process_change_empire_name':
+        process_change_empire_name(message)
+    elif action == 'process_admin_force_join':
+        process_admin_force_join(message)
+    elif action == 'process_empire_name':
+        process_empire_name(message)
+    elif action == 'process_broadcast':
+        process_broadcast(message)
+    elif action == 'process_admin_user_manage':
+        process_admin_user_manage(message)
+    elif action == 'process_admin_economy':
+        process_admin_economy(message)
+    elif action == 'process_admin_ban':
+        process_admin_ban(message)
+    elif action == 'process_admin_unban':
+        process_admin_unban(message)
+    elif action == 'process_admin_balance_step1':
+        process_admin_balance_step1(message)
+    elif action == 'process_admin_balance_step2':
+        process_admin_balance_step2(message, action_data.get('arg'))
+    elif action == 'process_admin_wipe':
+        process_admin_wipe(message)
+    elif action == 'process_recruit_quantity':
+        process_recruit_quantity(message, action_data.get('arg'))
+    elif action == 'process_market_create':
+        process_market_create(message)
+    elif action == 'process_market_buy':
+        process_market_buy(message)
+    elif action == 'process_alliance_create':
+        process_alliance_create(message)
+    elif action == 'process_alliance_withdraw':
+        process_alliance_withdraw(message)
+    elif action == 'process_alliance_chat':
+        process_alliance_chat(message)
+    elif action == 'process_alliance_roles':
+        process_alliance_roles(message)
+    elif action == 'process_alliance_sell':
+        process_alliance_sell(message)
+    elif action == 'process_alliance_kick':
+        process_alliance_kick(message)
+    elif action == 'process_alliance_donate':
+        process_alliance_donate(message)
+    elif action == 'process_bounty_place':
+        process_bounty_place(message)
+    elif action == 'process_bounty_claim':
+        process_bounty_claim(message)
+    else:
+        # Unknown action
+        pass
 
 
 # ============================================================
@@ -1797,18 +1855,18 @@ def callback_handler(call: types.CallbackQuery):
                 bot.answer_callback_query(call.id, "❌ برای تغییر نام امپراطوری حداقل ۲۰۰ سکه نیاز داری!", show_alert=True)
                 return
             msg = bot.send_message(chat_id, "✏️ برای تغییر نام امپراطوری به ۲۰۰ سکه نیاز دارید. اسم جدید را وارد کنید:")
-            bot.register_next_step_handler(msg, process_change_empire_name)
+            set_user_state(user_id, 'process_change_empire_name')
             return
 
         # فعال‌سازی عضویت اجباری توسط ادمین
         if data == 'admin_force_join' and is_admin_user(user_id):
             msg = bot.send_message(chat_id, "📢 آیدی کانال را برای عضویت اجباری وارد کنید (با @ شروع شود).\nبرای لغو عضویت اجباری، کلمه `لغو` را ارسال کنید:")
-            bot.register_next_step_handler(msg, process_admin_force_join)
+            set_user_state(user_id, 'process_admin_force_join')
             return
         message_id = call.message.message_id
 
         # بررسی مالکیت دکمه
-        owner = message_owners.get((chat_id, message_id))
+        owner = get_message_owner(chat_id, message_id)
         if owner is not None and owner != user_id:
             bot.answer_callback_query(call.id, "⛔️ این دکمه مال شما نیست.", show_alert=True)
             return
@@ -1822,15 +1880,15 @@ def callback_handler(call: types.CallbackQuery):
             return
         if data == 'admin_broadcast' and is_admin_user(user_id):
             msg = bot.send_message(chat_id, "📨 متن پیام همگانی را ارسال کنید:")
-            bot.register_next_step_handler(msg, process_broadcast)
+            set_user_state(user_id, 'process_broadcast')
             return
         if data == 'admin_user_manage' and is_admin_user(user_id):
             msg = bot.send_message(chat_id, "👤 نام امپراطوری کاربر را ارسال کنید:")
-            bot.register_next_step_handler(msg, process_admin_user_manage)
+            set_user_state(user_id, 'process_admin_user_manage')
             return
         if data == 'admin_economy' and is_admin_user(user_id):
             msg = bot.send_message(chat_id, "💰 نام امپراطوری کاربر را بفرستید:")
-            bot.register_next_step_handler(msg, process_admin_economy)
+            set_user_state(user_id, 'process_admin_economy')
             return
         if data == 'admin_events' and is_admin_user(user_id):
             spawn_castles(2)
@@ -1839,25 +1897,26 @@ def callback_handler(call: types.CallbackQuery):
             return
         if data == 'admin_ban' and is_admin_user(user_id):
             msg = bot.send_message(chat_id, "🔨 نام امپراطوری کاربر برای بن را بفرستید:")
-            bot.register_next_step_handler(msg, process_admin_ban)
+            set_user_state(user_id, 'process_admin_ban')
             return
         if data == 'admin_unban' and is_admin_user(user_id):
             msg = bot.send_message(chat_id, "🔓 نام امپراطوری کاربر را برای خارج کردن از بن وارد کنید:")
-            bot.register_next_step_handler(msg, process_admin_unban)
+            set_user_state(user_id, 'process_admin_unban')
             return
             
         if data == 'admin_change_balance' and is_admin_user(user_id):
             msg = bot.send_message(chat_id, "⚖️ نام امپراطوری کاربر را برای تغییر موجودی وارد کنید:")
-            bot.register_next_step_handler(msg, process_admin_balance_step1)
+            set_user_state(user_id, 'process_admin_balance_step1')
             return
 
         if data == 'admin_wipe' and is_admin_user(user_id):
             msg = bot.send_message(chat_id, "🧹 نام امپراطوری کاربر برای پاکسازی کامل را بفرستید:")
-            bot.register_next_step_handler(msg, process_admin_wipe)
+            set_user_state(user_id, 'process_admin_wipe')
             return
         if data == 'admin_exit' and is_admin_user(user_id):
             bot.delete_message(chat_id, message_id)
-            message_owners.pop((chat_id, message_id), None)
+            with get_connection() as conn:
+                conn.execute("DELETE FROM message_owners WHERE chat_id = ? AND message_id = ?", (chat_id, message_id))
             return
 
         # 🔄 بازگشت به منوی اصلی
@@ -1892,7 +1951,7 @@ def callback_handler(call: types.CallbackQuery):
         if data.startswith('recruit_'):
             unit_type = data.replace('recruit_', '')
             msg = bot.send_message(chat_id, "🔢 چند سرباز می‌خواهی استخدام کنی؟ (تعداد را به عدد بفرست):")
-            bot.register_next_step_handler(msg, process_recruit_quantity, unit_type)
+            set_user_state(user_id, 'process_recruit_quantity', {'arg': unit_type})
             return
 
 
@@ -1999,11 +2058,11 @@ def callback_handler(call: types.CallbackQuery):
             return
         if data == 'market_create':
             msg = bot.send_message(chat_id, "برای ایجاد آفر فروش، فرمت زیر را ارسال کنید:\nنوع منبع (coins/wood/stone/food) | تعداد | قیمت سکه\nمثال: wood 100 500")
-            bot.register_next_step_handler(msg, process_market_create)
+            set_user_state(user_id, 'process_market_create')
             return
         if data == 'market_buy':
             msg = bot.send_message(chat_id, "شناسه آفر را ارسال کنید:")
-            bot.register_next_step_handler(msg, process_market_buy)
+            set_user_state(user_id, 'process_market_buy')
             return
 
         # 👥 اتحاد
@@ -2012,7 +2071,7 @@ def callback_handler(call: types.CallbackQuery):
             return
         if data == 'alliance_create':
             msg = bot.send_message(chat_id, "نام اتحاد خود را ارسال کنید:")
-            bot.register_next_step_handler(msg, process_alliance_create)
+            set_user_state(user_id, 'process_alliance_create')
             return
         if data == 'alliance_list':
             show_alliance_list(chat_id, user_id, message_id)
@@ -2020,41 +2079,40 @@ def callback_handler(call: types.CallbackQuery):
 
         if data.startswith('alliance_join_'):
             alliance_id = int(data.replace('alliance_join_', ''))
-            conn = get_connection()
-            cur = conn.cursor()
-            cur.execute("SELECT * FROM alliances WHERE id = ?", (alliance_id,))
-            alliance = cur.fetchone()
-            conn.close()
+            with get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT * FROM alliances WHERE id = ?", (alliance_id,))
+                alliance = cur.fetchone()
             
-            if not alliance:
-                bot.answer_callback_query(call.id, "❌ این اتحاد یافت نشد.", show_alert=True)
-                return
+                if not alliance:
+                    bot.answer_callback_query(call.id, "❌ این اتحاد یافت نشد.", show_alert=True)
+                    return
                 
-            members = get_alliance_members(alliance_id)
-            if len(members) >= alliance.get('capacity', 5):
-                bot.answer_callback_query(call.id, "❌ ظرفیت این اتحاد پر شده است!", show_alert=True)
-                return
+                members = get_alliance_members(alliance_id)
+                if len(members) >= alliance.get('capacity', 5):
+                    bot.answer_callback_query(call.id, "❌ ظرفیت این اتحاد پر شده است!", show_alert=True)
+                    return
                 
-            if join_alliance(user_id, alliance_id):
-                bot.answer_callback_query(call.id, "✅ با موفقیت به اتحاد پیوستی!", show_alert=True)
-                show_alliance_menu(chat_id, user_id, message_id)
-            else:
-                bot.answer_callback_query(call.id, "❌ شما قبلاً در یک اتحاد عضو شده‌اید.", show_alert=True)
-            return
+                if join_alliance(user_id, alliance_id):
+                    bot.answer_callback_query(call.id, "✅ با موفقیت به اتحاد پیوستی!", show_alert=True)
+                    show_alliance_menu(chat_id, user_id, message_id)
+                else:
+                    bot.answer_callback_query(call.id, "❌ شما قبلاً در یک اتحاد عضو شده‌اید.", show_alert=True)
+                return
 
         if data == 'alliance_withdraw':
             msg = bot.send_message(chat_id, "📤 نوع منبع و مقدار را برای برداشت ارسال کنید (coins/wood/stone/food):\nمثال: coins 500")
-            bot.register_next_step_handler(msg, process_alliance_withdraw)
+            set_user_state(user_id, 'process_alliance_withdraw')
             return
             
         if data == 'alliance_chat':
             msg = bot.send_message(chat_id, "💬 پیام خود را بنویسید تا برای تمام اعضای اتحاد ارسال شود:")
-            bot.register_next_step_handler(msg, process_alliance_chat)
+            set_user_state(user_id, 'process_alliance_chat')
             return
             
         if data == 'alliance_roles':
             msg = bot.send_message(chat_id, "⚙️ نام امپراطوری عضو مورد نظر و نقش او را وارد کن:\nمثال: MyEmpire ژنرال")
-            bot.register_next_step_handler(msg, process_alliance_roles)
+            set_user_state(user_id, 'process_alliance_roles')
             return
             
         if data == 'alliance_upgrade_capacity':
@@ -2069,23 +2127,21 @@ def callback_handler(call: types.CallbackQuery):
             update_user(user_id, coins=user['coins'] - 2000)
             new_capacity = alliance.get('capacity', 5) + 1
             
-            conn = get_connection()
-            conn.execute("UPDATE alliances SET capacity = ? WHERE id = ?", (new_capacity, alliance['id']))
-            conn.commit()
-            conn.close()
+            with get_connection() as conn:
+                conn.execute("UPDATE alliances SET capacity = ? WHERE id = ?", (new_capacity, alliance['id']))
             
-            bot.answer_callback_query(call.id, f"✅ ظرفیت اتحاد به {new_capacity} افزایش یافت!", show_alert=True)
-            show_alliance_menu(chat_id, user_id, message_id)
-            return
+                bot.answer_callback_query(call.id, f"✅ ظرفیت اتحاد به {new_capacity} افزایش یافت!", show_alert=True)
+                show_alliance_menu(chat_id, user_id, message_id)
+                return
 
         if data == 'alliance_sell':
             msg = bot.send_message(chat_id, "🛒 قیمت فروش اتحاد را به سکه وارد کن:")
-            bot.register_next_step_handler(msg, process_alliance_sell)
+            set_user_state(user_id, 'process_alliance_sell')
             return
 
         if data == 'alliance_kick':
             msg = bot.send_message(chat_id, "👢 نام امپراطوری عضوی که می‌خواهی اخراج کنی را بفرست:")
-            bot.register_next_step_handler(msg, process_alliance_kick)
+            set_user_state(user_id, 'process_alliance_kick')
             return
             
         if data == 'alliance_delete_req':
@@ -2099,17 +2155,15 @@ def callback_handler(call: types.CallbackQuery):
         if data == 'alliance_delete_yes':
             alliance = get_alliance(user_id)
             if alliance and alliance['leader_id'] == user_id:
-                conn = get_connection()
-                conn.execute("UPDATE users SET alliance_id = NULL WHERE alliance_id = ?", (alliance['id'],))
-                conn.execute("DELETE FROM alliances WHERE id = ?", (alliance['id'],))
-                conn.commit()
-                conn.close()
-                edit_or_send(chat_id, message_id, "✅ اتحاد شما با موفقیت منحل شد.", build_inline_keyboard([[inline_btn("🏠 بازگشت", "main_menu", "info")]]), user_id)
+                with get_connection() as conn:
+                    conn.execute("UPDATE users SET alliance_id = NULL WHERE alliance_id = ?", (alliance['id'],))
+                    conn.execute("DELETE FROM alliances WHERE id = ?", (alliance['id'],))
+                    edit_or_send(chat_id, message_id, "✅ اتحاد شما با موفقیت منحل شد.", build_inline_keyboard([[inline_btn("🏠 بازگشت", "main_menu", "info")]]), user_id)
             return
 
         if data == 'alliance_donate':
             msg = bot.send_message(chat_id, "نوع منبع و مقدار را ارسال کنید (coins/wood/stone/food):\nمثال: coins 500")
-            bot.register_next_step_handler(msg, process_alliance_donate)
+            set_user_state(user_id, 'process_alliance_donate')
             return
         if data == 'alliance_territory':
             show_alliance_territory(chat_id, user_id, message_id)
@@ -2140,40 +2194,38 @@ def callback_handler(call: types.CallbackQuery):
                 territory = json.loads(alliance.get('territory', '{}'))
                 r_name = region_data['name']
                 
-                conn = get_connection()
-                cur = conn.cursor()
-                cur.execute("SELECT captures, level FROM alliances WHERE id = ?", (alliance['id'],))
-                al_data = cur.fetchone()
+                with get_connection() as conn:
+                    cur = conn.cursor()
+                    cur.execute("SELECT captures, level FROM alliances WHERE id = ?", (alliance['id'],))
+                    al_data = cur.fetchone()
                 
-                captures = (al_data['captures'] or 0) + 1
-                a_level = al_data['level']
-                req_captures = a_level * 5
+                    captures = (al_data['captures'] or 0) + 1
+                    a_level = al_data['level']
+                    req_captures = a_level * 5
                 
-                if captures >= req_captures:
-                    a_level += 1
-                    captures = 0
-                    reward = a_level * 5000
-                    cur.execute("UPDATE alliances SET level = ?, captures = ?, treasury_coins = treasury_coins + ?, treasury_wood = treasury_wood + ?, treasury_stone = treasury_stone + ?, treasury_food = treasury_food + ? WHERE id = ?", 
-                                (a_level, captures, reward, reward, reward, reward, alliance['id']))
-                    text = f"🎉 <b>پیروزی سترگ!</b>\n\nمحافظان <b>{r_name}</b> شکست خوردند.\n⭐ <b>سطح اتحاد ارتقا یافت! (سطح {a_level})</b>\n💰 مقدار {format_number(reward)} از تمام منابع به عنوان پاداش لول‌آپ به خزانه واریز شد!"
-                else:
-                    cur.execute("UPDATE alliances SET captures = ? WHERE id = ?", (captures, alliance['id']))
-                    text = f"🎉 <b>پیروزی!</b>\n\nمحافظان <b>{r_name}</b> شکست خوردند.\nپیشرفت تا ارتقای سطح اتحاد: {captures}/{req_captures}"
+                    if captures >= req_captures:
+                        a_level += 1
+                        captures = 0
+                        reward = a_level * 5000
+                        cur.execute("UPDATE alliances SET level = ?, captures = ?, treasury_coins = treasury_coins + ?, treasury_wood = treasury_wood + ?, treasury_stone = treasury_stone + ?, treasury_food = treasury_food + ? WHERE id = ?",
+                                    (a_level, captures, reward, reward, reward, reward, alliance['id']))
+                        text = f"🎉 <b>پیروزی سترگ!</b>\n\nمحافظان <b>{r_name}</b> شکست خوردند.\n⭐ <b>سطح اتحاد ارتقا یافت! (سطح {a_level})</b>\n💰 مقدار {format_number(reward)} از تمام منابع به عنوان پاداش لول‌آپ به خزانه واریز شد!"
+                    else:
+                        cur.execute("UPDATE alliances SET captures = ? WHERE id = ?", (captures, alliance['id']))
+                        text = f"🎉 <b>پیروزی!</b>\n\nمحافظان <b>{r_name}</b> شکست خوردند.\nپیشرفت تا ارتقای سطح اتحاد: {captures}/{req_captures}"
                 
-                if r_name in territory:
-                    territory[r_name]['level'] += 1
-                else:
-                    territory[r_name] = {'level': 1}
+                    if r_name in territory:
+                        territory[r_name]['level'] += 1
+                    else:
+                        territory[r_name] = {'level': 1}
                     
-                cur.execute("UPDATE alliances SET territory = ? WHERE id = ?", (json.dumps(territory, ensure_ascii=False), alliance['id']))
-                conn.commit()
-                conn.close()
+                    cur.execute("UPDATE alliances SET territory = ? WHERE id = ?", (json.dumps(territory, ensure_ascii=False), alliance['id']))
                 
-                for unit_type, u_data in units.items():
-                    loss = int(u_data['count'] * 0.10)
-                    if loss > 0: update_army_unit(user_id, unit_type, count_delta=-loss)
-                update_army_power_fields(user_id)
-                add_exp(user_id, 200, chat_id)
+                    for unit_type, u_data in units.items():
+                        loss = int(u_data['count'] * 0.10)
+                        if loss > 0: update_army_unit(user_id, unit_type, count_delta=-loss)
+                    update_army_power_fields(user_id)
+                    add_exp(user_id, 200, chat_id)
             else:
                 for unit_type, u_data in units.items():
                     loss = int(u_data['count'] * 0.30)
@@ -2200,18 +2252,16 @@ def callback_handler(call: types.CallbackQuery):
                 else:
                     territory[r_name] = {'level': 1}
                 
-                conn = get_connection()
-                conn.execute("UPDATE alliances SET territory = ? WHERE id = ?", (json.dumps(territory, ensure_ascii=False), alliance['id']))
-                conn.commit()
-                conn.close()
+                with get_connection() as conn:
+                    conn.execute("UPDATE alliances SET territory = ? WHERE id = ?", (json.dumps(territory, ensure_ascii=False), alliance['id']))
                 
-                # اعمال تلفات کم به خاطر پیروزی
-                for unit_type, u_data in units.items():
-                    loss = int(u_data['count'] * 0.10)
-                    if loss > 0: update_army_unit(user_id, unit_type, count_delta=-loss)
-                update_army_power_fields(user_id)
+                    # اعمال تلفات کم به خاطر پیروزی
+                    for unit_type, u_data in units.items():
+                        loss = int(u_data['count'] * 0.10)
+                        if loss > 0: update_army_unit(user_id, unit_type, count_delta=-loss)
+                    update_army_power_fields(user_id)
                 
-                text = f"🎉 <b>پیروزی سترگ!</b>\n\nشما موفق شدید محافظان <b>{r_name}</b> را در هم بشکنید! قلمرو اتحاد گسترش یافت."
+                    text = f"🎉 <b>پیروزی سترگ!</b>\n\nشما موفق شدید محافظان <b>{r_name}</b> را در هم بشکنید! قلمرو اتحاد گسترش یافت."
             else:
                 # شکست در نبرد
                 for unit_type, u_data in units.items():
@@ -2268,11 +2318,11 @@ def callback_handler(call: types.CallbackQuery):
         if data == 'bounty_place':
             msg = bot.send_message(chat_id, "نام امپراطوری هدف و مقدار جایزه را بفرستید:\n"
                                            "مثال: MyEmpire 1000")
-            bot.register_next_step_handler(msg, process_bounty_place)
+            set_user_state(user_id, 'process_bounty_place')
             return
         if data == 'bounty_claim':
             msg = bot.send_message(chat_id, "شناسه جایزه را ارسال کنید:")
-            bot.register_next_step_handler(msg, process_bounty_claim)
+            set_user_state(user_id, 'process_bounty_claim')
             return
 
                 # ============================================================
@@ -2456,33 +2506,32 @@ def show_pvp_list(chat_id: int, user_id: int, message_id: Optional[int] = None):
     user = get_user(user_id)
     if not user:
         return
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM users WHERE user_id != ? AND banned = 0 ORDER BY total_soldiers DESC LIMIT 20", (user_id,))
-    players = cur.fetchall()
-    conn.close()
-    text = "👤 <b>انتخاب بازیکن برای حمله</b>\n\n"
-    text += "⚠️ فقط بازیکنانی با اختلاف قدرت حداکثر ۲۰٪ قابل حمله هستند.\n\n"
-    my_power = user['total_soldiers']
-    eligible = []
-    for p in players:
-        p = dict(p)
-        diff = abs(p['total_soldiers'] - my_power) / max(1, my_power)
-        if diff <= 0.20:
-            eligible.append(p)
-            text += f"• {get_username_or_name(p)} — سربازان: {format_number(p['total_soldiers'])} — سطح: {p['level']}\n"
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM users WHERE user_id != ? AND banned = 0 ORDER BY total_soldiers DESC LIMIT 20", (user_id,))
+        players = cur.fetchall()
+        text = "👤 <b>انتخاب بازیکن برای حمله</b>\n\n"
+        text += "⚠️ فقط بازیکنانی با اختلاف قدرت حداکثر ۲۰٪ قابل حمله هستند.\n\n"
+        my_power = user['total_soldiers']
+        eligible = []
+        for p in players:
+            p = dict(p)
+            diff = abs(p['total_soldiers'] - my_power) / max(1, my_power)
+            if diff <= 0.20:
+                eligible.append(p)
+                text += f"• {get_username_or_name(p)} — سربازان: {format_number(p['total_soldiers'])} — سطح: {p['level']}\n"
             
-    if not eligible:
-        text += "بازیکن واجد شرایطی یافت نشد.\n"
+        if not eligible:
+            text += "بازیکن واجد شرایطی یافت نشد.\n"
         
-    rows = []
-    for p in eligible[:10]:
-        rows.append([inline_btn(f"⚔️ حمله به {get_username_or_name(p)}", f"pvp_challenge_{p['user_id']}", "danger")])
-    rows.append([inline_btn("🏠 بازگشت", "main_menu", "primary")])
+        rows = []
+        for p in eligible[:10]:
+            rows.append([inline_btn(f"⚔️ حمله به {get_username_or_name(p)}", f"pvp_challenge_{p['user_id']}", "danger")])
+        rows.append([inline_btn("🏠 بازگشت", "main_menu", "primary")])
 
-    # این خط جا افتاده بود
-    markup = build_inline_keyboard(rows)
-    edit_or_send(chat_id, message_id, text, markup, user_id)
+        # این خط جا افتاده بود
+        markup = build_inline_keyboard(rows)
+        edit_or_send(chat_id, message_id, text, markup, user_id)
 
 
 def send_pvp_challenge(chat_id: int, attacker_id: int, defender_id: int, message_id: int):
@@ -2556,7 +2605,7 @@ def accept_pvp(chat_id: int, attacker_id: int, defender_id: int, message_id: int
     ]), defender_id)
     # ارسال نتیجه به مهاجم
     attacker_msg = bot.send_message(attacker_id, "⚔️ نتیجه نبرد:\n" + text)
-    message_owners[(attacker_id, attacker_msg.message_id)] = attacker_id
+    set_message_owner(attacker_id, attacker_msg.message_id, attacker_id)
 
 def decline_pvp(chat_id: int, attacker_id: int, defender_id: int, message_id: int):
     defender = get_user_raw(defender_id)
@@ -2629,29 +2678,28 @@ def recruit_unit(chat_id: int, user_id: int, unit_type: str, message_id: int):
 # 👥 توابع اتحاد (ویرایش همان پیام)
 # ============================================================
 def show_alliance_list(chat_id: int, user_id: int, message_id: Optional[int] = None):
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM alliances ORDER BY id DESC LIMIT 10")
-    alliances = cur.fetchall()
-    conn.close()
-    text = "📋 <b>فهرست اتحادها</b>\n\n"
-    if not alliances:
-        text += "اتحادی وجود ندارد.\n"
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM alliances ORDER BY id DESC LIMIT 10")
+        alliances = cur.fetchall()
+        text = "📋 <b>فهرست اتحادها</b>\n\n"
+        if not alliances:
+            text += "اتحادی وجود ندارد.\n"
         
-    rows = []
-    for a in alliances:
-        a = dict(a)
-        member_count = len(get_alliance_members(a['id']))
-        capacity = a.get('capacity', 5)
-        text += f"• {a['name']} (ظرفیت: {member_count}/{capacity})\n"
+        rows = []
+        for a in alliances:
+            a = dict(a)
+            member_count = len(get_alliance_members(a['id']))
+            capacity = a.get('capacity', 5)
+            text += f"• {a['name']} (ظرفیت: {member_count}/{capacity})\n"
         
-        # دکمه جوین فقط اگر ظرفیت پر نشده باشد ساخته می‌شود
-        if member_count < capacity:
-            rows.append([inline_btn(f"➕ عضویت در {a['name']}", f"alliance_join_{a['id']}", "success")])
+            # دکمه جوین فقط اگر ظرفیت پر نشده باشد ساخته می‌شود
+            if member_count < capacity:
+                rows.append([inline_btn(f"➕ عضویت در {a['name']}", f"alliance_join_{a['id']}", "success")])
             
-    rows.append([inline_btn("🏠 بازگشت", "main_menu", "primary")])
-    markup = build_inline_keyboard(rows)
-    edit_or_send(chat_id, message_id, text, markup, user_id)
+        rows.append([inline_btn("🏠 بازگشت", "main_menu", "primary")])
+        markup = build_inline_keyboard(rows)
+        edit_or_send(chat_id, message_id, text, markup, user_id)
 
 
 
@@ -2707,60 +2755,58 @@ def show_territory_attack_menu(chat_id: int, user_id: int, message_id: Optional[
 # 👑 توابع پنل مدیریت (ویرایش شده برای نام امپراطوری)
 # ============================================================
 def show_admin_stats(chat_id: int, message_id: int, user_id: int):
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM users")
-    total_users = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM users WHERE last_seen > ?", (int(time.time()) - 86400,))
-    active_24h = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM alliances")
-    total_alliances = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM battles WHERE created_at > ?", (int(time.time()) - 86400,))
-    battles_24h = cur.fetchone()[0]
-    cur.execute("SELECT SUM(coins) FROM users")
-    total_coins = cur.fetchone()[0] or 0
-    cur.execute("SELECT SUM(wood) FROM users")
-    total_wood = cur.fetchone()[0] or 0
-    cur.execute("SELECT SUM(stone) FROM users")
-    total_stone = cur.fetchone()[0] or 0
-    cur.execute("SELECT SUM(food) FROM users")
-    total_food = cur.fetchone()[0] or 0
-    conn.close()
-    text = (
-        f"📊 <b>آمار سرور</b>\n"
-        f"👥 کاربران کل: {total_users}\n"
-        f"🟢 فعال ۲۴ ساعت: {active_24h}\n"
-        f"👥 اتحادها: {total_alliances}\n"
-        f"⚔️ نبردهای ۲۴ ساعت: {battles_24h}\n"
-        f"━━━━━━━━━━━━━━━━\n"
-        f"💰 مجموع سکه: {format_number(total_coins)}\n"
-        f"🪵 مجموع چوب: {format_number(total_wood)}\n"
-        f"🪨 مجموع سنگ: {format_number(total_stone)}\n"
-        f"🍖 مجموع غذا: {format_number(total_food)}\n"
-        f"━━━━━━━━━━━━━━━━\n"
-        f"💵 تورم اقتصاد: {(total_coins / max(1, total_users)):.2f} سکه به ازای هر کاربر\n"
-    )
-    markup = build_inline_keyboard([[inline_btn("🔙 بازگشت", "admin_panel", "info")]])
-    edit_or_send(chat_id, message_id, text, markup, user_id)
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM users")
+        total_users = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM users WHERE last_seen > ?", (int(time.time()) - 86400,))
+        active_24h = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM alliances")
+        total_alliances = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM battles WHERE created_at > ?", (int(time.time()) - 86400,))
+        battles_24h = cur.fetchone()[0]
+        cur.execute("SELECT SUM(coins) FROM users")
+        total_coins = cur.fetchone()[0] or 0
+        cur.execute("SELECT SUM(wood) FROM users")
+        total_wood = cur.fetchone()[0] or 0
+        cur.execute("SELECT SUM(stone) FROM users")
+        total_stone = cur.fetchone()[0] or 0
+        cur.execute("SELECT SUM(food) FROM users")
+        total_food = cur.fetchone()[0] or 0
+        text = (
+            f"📊 <b>آمار سرور</b>\n"
+            f"👥 کاربران کل: {total_users}\n"
+            f"🟢 فعال ۲۴ ساعت: {active_24h}\n"
+            f"👥 اتحادها: {total_alliances}\n"
+            f"⚔️ نبردهای ۲۴ ساعت: {battles_24h}\n"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"💰 مجموع سکه: {format_number(total_coins)}\n"
+            f"🪵 مجموع چوب: {format_number(total_wood)}\n"
+            f"🪨 مجموع سنگ: {format_number(total_stone)}\n"
+            f"🍖 مجموع غذا: {format_number(total_food)}\n"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"💵 تورم اقتصاد: {(total_coins / max(1, total_users)):.2f} سکه به ازای هر کاربر\n"
+        )
+        markup = build_inline_keyboard([[inline_btn("🔙 بازگشت", "admin_panel", "info")]])
+        edit_or_send(chat_id, message_id, text, markup, user_id)
 
 def process_broadcast(message):
     if not is_admin_user(message.from_user.id):
         return
     text = message.text
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT user_id FROM users")
-    users = cur.fetchall()
-    conn.close()
-    count = 0
-    for u in users:
-        try:
-            bot.send_message(u[0], text)
-            count += 1
-            time.sleep(0.05)
-        except:
-            pass
-    bot.send_message(message.chat.id, f"✅ پیام به {count} کاربر ارسال شد.")
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT user_id FROM users")
+        users = cur.fetchall()
+        count = 0
+        for u in users:
+            try:
+                bot.send_message(u[0], text)
+                count += 1
+                time.sleep(0.05)
+            except:
+                pass
+        bot.send_message(message.chat.id, f"✅ پیام به {count} کاربر ارسال شد.")
 
 def process_admin_user_manage(message):
     if not is_admin_user(message.from_user.id):
@@ -2833,7 +2879,8 @@ def process_admin_unban(message):
     bot.send_message(message.chat.id, f"✅ کاربر {user['empire_name']} با موفقیت آنبن شد.")
 
 def process_admin_balance_step1(message):
-    if not is_admin_user(message.from_user.id):
+    user_id = message.from_user.id
+    if not is_admin_user(user_id):
         return
     name = message.text.strip()
     user = get_user_by_empire_name(name)
@@ -2849,7 +2896,7 @@ def process_admin_balance_step1(message):
         f"مثال کاهش: food -50"
     )
     # پاس دادن آیدی کاربر به مرحله دوم
-    bot.register_next_step_handler(msg, process_admin_balance_step2, user['user_id'])
+    set_user_state(user_id, 'process_admin_balance_step2', {'arg': user['user_id']})
 
 def process_admin_balance_step2(message, target_user_id):
     if not is_admin_user(message.from_user.id):
@@ -2898,21 +2945,19 @@ def process_admin_wipe(message):
         bot.send_message(message.chat.id, "❌ کاربر یافت نشد.")
         return
     target_id = user['user_id']
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM army_units WHERE user_id = ?", (target_id,))
-    cur.execute("DELETE FROM battles WHERE attacker_id = ? OR defender_id = ?", (target_id, target_id))
-    cur.execute("DELETE FROM market_offers WHERE seller_id = ?", (target_id,))
-    cur.execute("DELETE FROM bounties WHERE target_id = ? OR issuer_id = ?", (target_id, target_id))
-    cur.execute("DELETE FROM boss_attacks WHERE user_id = ?", (target_id,))
-    cur.execute("DELETE FROM generals WHERE user_id = ?", (target_id,))
-    cur.execute("DELETE FROM tickets WHERE user_id = ?", (target_id,))
-    cur.execute("UPDATE users SET coins = 500, wood = 400, stone = 350, food = 600, total_soldiers = 0, "
-                "attack_power = 0, defense_power = 0, level = 1, exp = 0, alliance_id = NULL, "
-                "generals_json = '[]' WHERE user_id = ?", (target_id,))
-    conn.commit()
-    conn.close()
-    bot.send_message(message.chat.id, f"✅ امپراتوری کاربر {user['empire_name']} به طور کامل پاکسازی شد.")
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM army_units WHERE user_id = ?", (target_id,))
+        cur.execute("DELETE FROM battles WHERE attacker_id = ? OR defender_id = ?", (target_id, target_id))
+        cur.execute("DELETE FROM market_offers WHERE seller_id = ?", (target_id,))
+        cur.execute("DELETE FROM bounties WHERE target_id = ? OR issuer_id = ?", (target_id, target_id))
+        cur.execute("DELETE FROM boss_attacks WHERE user_id = ?", (target_id,))
+        cur.execute("DELETE FROM generals WHERE user_id = ?", (target_id,))
+        cur.execute("DELETE FROM tickets WHERE user_id = ?", (target_id,))
+        cur.execute("UPDATE users SET coins = 500, wood = 400, stone = 350, food = 600, total_soldiers = 0, "
+                    "attack_power = 0, defense_power = 0, level = 1, exp = 0, alliance_id = NULL, "
+                    "generals_json = '[]' WHERE user_id = ?", (target_id,))
+        bot.send_message(message.chat.id, f"✅ امپراتوری کاربر {user['empire_name']} به طور کامل پاکسازی شد.")
 
 # ============================================================
 # 🧾 هندلرهای مرحله‌ای (Next Step) - جایگزینی آیدی با نام امپراطوری
@@ -3012,18 +3057,15 @@ def process_bounty_claim(message):
 # 🌍 سیستم گروه اختصاصی
 # ============================================================
 def set_exclusive_chat(chat_id: int) -> None:
-    conn = get_connection()
-    conn.execute("INSERT OR REPLACE INTO bot_settings (key, value) VALUES ('exclusive_chat_id', ?)", (chat_id,))
-    conn.commit()
-    conn.close()
+    with get_connection() as conn:
+        conn.execute("INSERT OR REPLACE INTO bot_settings (key, value) VALUES ('exclusive_chat_id', ?)", (chat_id,))
 
 def get_exclusive_chat() -> Optional[int]:
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT value FROM bot_settings WHERE key = 'exclusive_chat_id'")
-    row = cur.fetchone()
-    conn.close()
-    return int(row['value']) if row else None
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM bot_settings WHERE key = 'exclusive_chat_id'")
+        row = cur.fetchone()
+        return int(row['value']) if row else None
 
 @bot.message_handler(content_types=['new_chat_members'])
 def on_new_chat_members(message):
@@ -3068,6 +3110,9 @@ def background_jobs():
             spawn_castles(3)
             if not get_active_world_boss():
                 spawn_world_boss(1)
+
+            with get_connection() as conn:
+                conn.execute("DELETE FROM message_owners WHERE created_at < ?", (int(time.time()) - 86400,))
         except Exception as e:
             print(f"Background error: {e}")
         time.sleep(CASTLE_SPAWN_INTERVAL_HOURS * 3600)
