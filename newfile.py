@@ -653,8 +653,8 @@ def simulate_battle(attacker_id: int, defender_id: int) -> Dict[str, Any]:
 
     # اعمال بونوس تاکتیک
         # اعمال بونوس ژنرال‌ها به صورت صحیح
-    attacker_generals = json.loads(attacker.get('generals_json', '[]'))
-    defender_generals = json.loads(defender.get('generals_json', '[]'))
+    attacker_generals = json.loads(attacker.get('generals_json') or '[]')
+    defender_generals = json.loads(defender.get('generals_json') or '[]')
     
     # اگر نوع بونوس ژنرال شامل کلمه attack بود، به مهاجم اضافه شود
     a_bonus = sum(g.get('bonus_value', 0) for g in attacker_generals if 'attack' in g.get('bonus_type', ''))
@@ -846,7 +846,7 @@ def roll_gacha(user_id: int) -> Optional[Dict[str, Any]]:
     pool = [g for g in GACHA_POOL if g['rarity'] == rarity] or GACHA_POOL
     selected = random.choice(pool)
     # ذخیره ژنرال
-    generals = json.loads(user.get('generals_json', '[]'))
+    generals = json.loads(user.get('generals_json') or '[]')
     # بررسی وجود
     for g in generals:
         if g['id'] == selected['id']:
@@ -1446,7 +1446,7 @@ def show_alliance_menu(chat_id: int, user_id: int, message_id: Optional[int] = N
 
 def show_gacha_menu(chat_id: int, user_id: int, message_id: Optional[int] = None):
     user = get_user(user_id)
-    generals = json.loads(user.get('generals_json', '[]'))
+    generals = json.loads(user.get('generals_json') or '[]')
     text = "🎁 <b>ژنرال‌ها (Gacha)</b>\n\n"
     text += f"سکه شما: {format_number(user['coins'])}\n"
     text += "هر بار احضار ۲۰۰ سکه هزینه دارد.\n\n"
@@ -1534,9 +1534,10 @@ def buy_market_offer(buyer_id: int, offer_id: int) -> bool:
         cur = conn.cursor()
         cur.execute("SELECT * FROM market_offers WHERE id = ? AND active = 1", (offer_id,))
         offer = cur.fetchone()
-        if not buyer or not offer or buyer['coins'] < offer['price_coins']:
-            return False
-        offer = dict(offer)
+
+    if not buyer or not offer or buyer['coins'] < offer['price_coins']:
+        return False
+    offer = dict(offer)
     
     # خرید اتحاد از بازار
     if offer['item_type'] == 'alliance':
@@ -3187,6 +3188,8 @@ def background_jobs():
 
 # ============================================================
 # 🚀 اجرای ربات
+
+
 # ============================================================
 if __name__ == '__main__':
     print("🤖 ربات کوین لند روشن شد...")
