@@ -1143,7 +1143,11 @@ def get_force_join_channel() -> Optional[str]:
         return row['value'] if row else None
 
 def check_user_joined(user_id: int) -> bool:
-    """بررسی می‌کند آیا کاربر در کانال اجباری عضو هست یا نه"""
+    """بررسی می‌کند آیا کاربر در کانال اجباری عضو هست یا نه (ادمین‌ها معاف هستند)"""
+    # استثنا کردن ادمین‌ها
+    if is_admin_user(user_id):
+        return True
+
     channel = get_force_join_channel()
     if not channel:
         return True # اگر کانالی ثبت نشده بود، همه مجازند
