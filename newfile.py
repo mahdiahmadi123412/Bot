@@ -533,9 +533,11 @@ def ensure_production(user_id: int, user: Optional[Dict[str, Any]] = None) -> No
 # ============================================================
 # 🎨 دکمه‌های شیشه‌ای (به‌همراه استایل بصری با ایموجی)
 # ============================================================
-def inline_btn(text: str, callback_data: str, *args, **kwargs) -> InlineKeyboardButton:
-    """ساخت دکمه شیشه‌ای."""
-    return InlineKeyboardButton(text=text, callback_data=callback_data)
+def inline_btn(text: str, callback_data: str, style: str = 'primary', **kwargs) -> InlineKeyboardButton:
+    valid_styles = ['primary', 'secondary', 'success', 'danger', 'warning', 'info']
+    if style not in valid_styles:
+        style = 'primary'
+    return InlineKeyboardButton(text=text, callback_data=callback_data, style=style, **kwargs)
 
 
 def inline_row(*buttons: InlineKeyboardButton) -> List[InlineKeyboardButton]:
@@ -998,24 +1000,33 @@ def place_bounty(target_id: int, issuer_id: int, amount: int) -> bool:
 def claim_bounty(bounty_id: int, hunter_id: int) -> bool:
     with get_connection() as conn:
         cur = conn.cursor()
+        cur.execute("BEGIN IMMEDIATE")
         cur.execute("SELECT * FROM bounties WHERE id = ? AND active = 1", (bounty_id,))
         bounty = cur.fetchone()
         if not bounty:
             return False
         bounty = dict(bounty)
 
+        # Mark as pending/claimed immediately to prevent double claim
+        cur.execute("UPDATE bounties SET active = 0 WHERE id = ?", (bounty_id,))
+
     hunter = get_user(hunter_id)
     target = get_user(bounty['target_id'])
     if not hunter or not target:
+        # Revert active state
+        with get_connection() as conn:
+            conn.execute("UPDATE bounties SET active = 1 WHERE id = ?", (bounty_id,))
         return False
 
     # Simulate a full battle
     result = simulate_battle(hunter_id, target['user_id'])
     if result['winner'] == hunter_id:
         update_user(hunter_id, coins=hunter['coins'] + bounty['amount_coins'])
-        with get_connection() as conn:
-            conn.execute("UPDATE bounties SET active = 0 WHERE id = ?", (bounty_id,))
         return True
+
+    # If lost, revert active state so someone else can claim
+    with get_connection() as conn:
+        conn.execute("UPDATE bounties SET active = 1 WHERE id = ?", (bounty_id,))
     return False
 
 # ============================================================
@@ -1056,20 +1067,28 @@ def attack_world_boss(user_id: int, soldiers: int) -> Dict[str, Any]:
     update_army_power_fields(user_id)
     new_hp = max(0, boss['hp'] - damage)
 
-    # کسر سربازان اعزامی (تلفات)
     with get_connection() as conn:
         cur = conn.cursor()
-        if new_hp == 0:
+        cur.execute("BEGIN IMMEDIATE")
+        cur.execute("SELECT hp FROM world_boss WHERE id = ? AND active = 1", (boss['id'],))
+        current_boss = cur.fetchone()
+        if not current_boss:
+            return {'success': False, 'message': 'باس در حین حمله شما کشته شد!'}
+
+        real_hp = current_boss['hp']
+        real_new_hp = max(0, real_hp - damage)
+
+        if real_new_hp == 0:
             cur.execute("UPDATE world_boss SET hp = 0, active = 0 WHERE id = ?", (boss['id'],))
             cur.execute("INSERT INTO boss_attacks (boss_id, user_id, damage, created_at) VALUES (?, ?, ?, ?)",
                         (boss['id'], user_id, damage, int(time.time())))
             update_user(user_id, coins=user['coins'] + 10000, wood=user['wood'] + 5000)
             return {'success': True, 'damage': damage, 'new_hp': 0, 'max_hp': boss['max_hp'], 'killed': True}
         else:
-            cur.execute("UPDATE world_boss SET hp = ? WHERE id = ?", (new_hp, boss['id']))
+            cur.execute("UPDATE world_boss SET hp = ? WHERE id = ?", (real_new_hp, boss['id']))
             cur.execute("INSERT INTO boss_attacks (boss_id, user_id, damage, created_at) VALUES (?, ?, ?, ?)",
                         (boss['id'], user_id, damage, int(time.time())))
-            return {'success': True, 'damage': damage, 'new_hp': new_hp, 'max_hp': boss['max_hp'], 'killed': False}
+            return {'success': True, 'damage': damage, 'new_hp': real_new_hp, 'max_hp': boss['max_hp'], 'killed': False}
 
 # ============================================================
 # 👑 پنل مدیریت (Admin Panel)
@@ -1616,12 +1635,19 @@ def show_battle_reports(chat_id: int, user_id: int, message_id: Optional[int] = 
         for b in battles:
             b = dict(b)
             winner = "شما" if b['winner_id'] == user_id else "دشمن"
+
+            my_losses = json.loads(b['attacker_losses_json']) if b['attacker_id'] == user_id else json.loads(b['defender_losses_json'])
+            losses_str = ", ".join([f"{UNIT_TYPES[k]['name']}: {v}" for k, v in my_losses.items()]) if my_losses else "بدون تلفات"
+
+            opp_id = b['defender_id'] if b['attacker_id'] == user_id else b['attacker_id']
+            opp_user = get_user_raw(opp_id)
+            opp_name = get_username_or_name(opp_user) if opp_user else "نامشخص"
+
             text += (
-                f"⚔️ نبرد #{b['id']}\n"
-                f"👤 شما: {b['attacker_id'] if b['attacker_id'] == user_id else b['defender_id']}\n"
+                f"⚔️ نبرد #{b['id']} در برابر {opp_name}\n"
                 f"🏆 برنده: {winner}\n"
-                f"💰 غنائم: {format_number(b['coins_looted'])} سکه، {format_number(b['wood_looted'])} چوب\n"
-                f"🗡️ تلفات شما: {json.loads(b['attacker_losses_json']) if b['attacker_id'] == user_id else json.loads(b['defender_losses_json'])}\n"
+                f"💰 غنائم کسب/ازدست رفته: {format_number(b['coins_looted'])} سکه، {format_number(b['wood_looted'])} چوب\n"
+                f"🗡️ تلفات شما: {losses_str}\n"
                 f"━━━━━━━━━━━━━━━━\n"
             )
         markup = build_inline_keyboard([[inline_btn("🏠 بازگشت", "main_menu", "info")]])
@@ -2233,6 +2259,90 @@ def callback_handler(call: types.CallbackQuery):
             return
 
         # تغییر نام امپراطوری
+
+        if data == 'gacha_menu':
+            show_gacha_menu(chat_id, user_id, message_id)
+            return
+        if data == 'gacha_roll':
+            gen = roll_gacha(user_id)
+            if not gen:
+                bot.answer_callback_query(call.id, "❌ سکه کافی برای احضار ژنرال ندارید!", show_alert=True)
+            else:
+                bot.answer_callback_query(call.id, f"🎉 شما ژنرال {gen['name']} را به دست آوردید!", show_alert=True)
+                show_gacha_menu(chat_id, user_id, message_id)
+            return
+        if data == 'battle_reports':
+            show_battle_reports(chat_id, user_id, message_id)
+            return
+        if data == 'world_boss_menu':
+            show_world_boss_menu(chat_id, user_id, message_id)
+            return
+        if data in ['boss_attack_100', 'boss_attack_500', 'boss_attack_1000']:
+            soldiers = int(data.replace('boss_attack_', ''))
+            result = attack_world_boss(user_id, soldiers)
+            if not result['success']:
+                bot.answer_callback_query(call.id, result['message'], show_alert=True)
+            else:
+                msg = f"🔥 شما {format_number(result['damage'])} آسیب به باس جهانی وارد کردید!\n"
+                if result.get('killed'):
+                    msg += "🎉 باس کشته شد! شما 10,000 سکه و 5,000 چوب پاداش گرفتید!"
+                else:
+                    msg += f"جان باقی‌مانده: {format_number(result['new_hp'])} / {format_number(result['max_hp'])}"
+                bot.send_message(chat_id, msg)
+                show_world_boss_menu(chat_id, user_id, message_id)
+            return
+        if data == 'bounty_menu':
+            show_bounty_menu(chat_id, user_id, message_id)
+            return
+        if data == 'bounty_manage':
+            with get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT * FROM bounties WHERE issuer_id = ? AND active = 1", (user_id,))
+                my_bounties = cur.fetchall()
+            text = "🛠 <b>جایزه‌های تعیین‌شده توسط شما</b>\n\n"
+            rows = []
+            if not my_bounties:
+                text += "شما هیچ جایزه‌ای فعال نکرده‌اید."
+            else:
+                text += "برای لغو هر جایزه روی دکمه مربوطه کلیک کنید:\n"
+                for b in my_bounties:
+                    b = dict(b)
+                    target = get_user_raw(b['target_id'])
+                    t_name = target['empire_name'] if target else "نامشخص"
+                    label = f"لغو جایزه {t_name} ({format_number(b['amount_coins'])} سکه)"
+                    rows.append([inline_btn(label, f"bounty_cancel_{b['id']}", "danger")])
+            rows.append([inline_btn("🏠 بازگشت", "bounty_menu", "primary")])
+            edit_or_send(chat_id, message_id, text, build_inline_keyboard(rows), user_id)
+            return
+        if data.startswith('bounty_cancel_'):
+            b_id = int(data.replace('bounty_cancel_', ''))
+            with get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT * FROM bounties WHERE id = ? AND issuer_id = ? AND active = 1", (b_id, user_id))
+                bounty = cur.fetchone()
+                if bounty:
+                    bounty = dict(bounty)
+                    conn.execute("UPDATE bounties SET active = 0 WHERE id = ?", (b_id,))
+                    user = get_user_raw(user_id)
+                    update_user(user_id, coins=user['coins'] + bounty['amount_coins'])
+                    bot.answer_callback_query(call.id, "✅ جایزه شما لغو شد و سکه‌ها به حسابتان بازگشت.", show_alert=True)
+                else:
+                    bot.answer_callback_query(call.id, "❌ جایزه یافت نشد یا قبلاً انجام/لغو شده است.", show_alert=True)
+            call.data = 'bounty_manage'
+            callback_handler(call)
+            return
+        if data == 'bounty_place':
+            msg = bot.send_message(chat_id, "نام امپراطوری هدف و مقدار جایزه را بفرستید:\nمثال: MyEmpire 1000")
+            set_user_state(user_id, 'process_bounty_place')
+            return
+        if data == 'bounty_claim':
+            msg = bot.send_message(chat_id, "شناسه جایزه را وارد کنید:")
+            set_user_state(user_id, 'process_bounty_claim')
+            return
+        if data == 'leaderboard':
+            show_leaderboard(chat_id, user_id, message_id)
+            return
+
         if data == 'change_empire_name':
             user = get_user(user_id)
             if user['coins'] < 200:
