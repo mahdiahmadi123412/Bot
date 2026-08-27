@@ -533,11 +533,13 @@ def ensure_production(user_id: int, user: Optional[Dict[str, Any]] = None) -> No
 # ============================================================
 # 🎨 دکمه‌های شیشه‌ای (به‌همراه استایل بصری با ایموجی)
 # ============================================================
-def inline_btn(text: str, callback_data: str, style: str = 'primary', **kwargs) -> InlineKeyboardButton:
-    valid_styles = ['primary', 'secondary', 'success', 'danger', 'warning', 'info']
-    if style not in valid_styles:
-        style = 'primary'
-    return InlineKeyboardButton(text=text, callback_data=callback_data, style=style, **kwargs)
+def inline_btn(text: str, callback_data: str, *args, **kwargs) -> InlineKeyboardButton:
+    # Telebot API does not natively support colored styles. We absorb the style argument here and drop it.
+    if 'style' in kwargs:
+        del kwargs['style']
+    if args and len(args) > 0:
+        pass # ignore positional style
+    return InlineKeyboardButton(text=text, callback_data=callback_data, **kwargs)
 
 
 def inline_row(*buttons: InlineKeyboardButton) -> List[InlineKeyboardButton]:
