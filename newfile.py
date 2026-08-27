@@ -118,6 +118,8 @@ def init_db() -> None:
         # این خط را اضافه کن:
         add_column_if_not_exists(conn, 'users', 'current_action', 'TEXT')
         add_column_if_not_exists(conn, 'users', 'action_data', 'TEXT')
+        add_column_if_not_exists(conn, 'users', 'is_in_war', 'INTEGER')
+        cur.execute('CREATE TABLE IF NOT EXISTS war_volunteers (user_id INTEGER PRIMARY KEY, alliance_id INTEGER, role TEXT)')
     
 
 
@@ -346,6 +348,18 @@ def get_user_raw(user_id: int) -> Optional[Dict[str, Any]]:
         cur.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
         row = cur.fetchone()
         return dict(row) if row else None
+
+
+def set_war_lock(user_id: int, status: int):
+    with get_connection() as conn:
+        conn.execute("UPDATE users SET is_in_war = ? WHERE user_id = ?", (status, user_id))
+
+def is_war_locked(user_id: int) -> bool:
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT is_in_war FROM users WHERE user_id = ?", (user_id,))
+        row = cur.fetchone()
+        return bool(row and row['is_in_war'] == 1)
 
 def get_user_by_empire_name(name: str) -> Optional[Dict[str, Any]]:
     with get_connection() as conn:
@@ -646,12 +660,59 @@ def simulate_battle(attacker_id: int, defender_id: int) -> Dict[str, Any]:
     attacker_defense = calculate_army_defense(attacker_id)
     defender_attack = calculate_army_power(defender_id)
     defender_defense = calculate_army_defense(defender_id)
-    
-    # ... (بقیه کدهای simulate_battle دقیقاً مثل قبل باقی می‌مونه)
 
+    # Unit Tactical Relationship Calculations (Bonus vs / Weak vs)
+    a_tactical_bonus = 0.0
+    d_tactical_bonus = 0.0
 
-    # اعمال بونوس تاکتیک
-        # اعمال بونوس ژنرال‌ها به صورت صحیح
+    # Categorize units for attacker and defender
+    a_cats = set(UNIT_TYPES[u_id].get('bonus_vs', '') for u_id in attacker_units if attacker_units[u_id]['count'] > 0 and UNIT_TYPES.get(u_id))
+    d_cats = set(UNIT_TYPES[u_id].get('bonus_vs', '') for u_id in defender_units if defender_units[u_id]['count'] > 0 and UNIT_TYPES.get(u_id))
+
+    # For every attacker unit
+    for au_id, au_data in attacker_units.items():
+        if au_data['count'] <= 0: continue
+        u_info = UNIT_TYPES.get(au_id)
+        if not u_info: continue
+
+        bonus_target = u_info.get('bonus_vs')
+        weak_target = u_info.get('weak_vs')
+
+        # Check against defender units
+        for du_id, du_data in defender_units.items():
+            if du_data['count'] <= 0: continue
+            d_info = UNIT_TYPES.get(du_id)
+            if not d_info: continue
+
+            # Use arbitrary string matching from unit type to determine class for basic logic (e.g. spearman vs cavalry)
+            # 'cavalry', 'infantry', 'ranged'
+            if bonus_target and bonus_target in du_id:
+                a_tactical_bonus += 0.20 * (au_data['count'] / max(1, sum(u['count'] for u in attacker_units.values())))
+            if weak_target and weak_target in du_id:
+                a_tactical_bonus -= 0.20 * (au_data['count'] / max(1, sum(u['count'] for u in attacker_units.values())))
+
+    for du_id, du_data in defender_units.items():
+        if du_data['count'] <= 0: continue
+        d_info = UNIT_TYPES.get(du_id)
+        if not d_info: continue
+
+        bonus_target = d_info.get('bonus_vs')
+        weak_target = d_info.get('weak_vs')
+
+        for au_id, au_data in attacker_units.items():
+            if au_data['count'] <= 0: continue
+            a_info = UNIT_TYPES.get(au_id)
+            if not a_info: continue
+
+            if bonus_target and bonus_target in au_id:
+                d_tactical_bonus += 0.20 * (du_data['count'] / max(1, sum(u['count'] for u in defender_units.values())))
+            if weak_target and weak_target in au_id:
+                d_tactical_bonus -= 0.20 * (du_data['count'] / max(1, sum(u['count'] for u in defender_units.values())))
+
+    attacker_attack = int(attacker_attack * (1 + a_tactical_bonus))
+    defender_defense = int(defender_defense * (1 + d_tactical_bonus))
+
+    # اعمال بونوس ژنرال‌ها به صورت صحیح
     attacker_generals = json.loads(attacker.get('generals_json') or '[]')
     defender_generals = json.loads(defender.get('generals_json') or '[]')
     
@@ -677,22 +738,44 @@ def simulate_battle(attacker_id: int, defender_id: int) -> Dict[str, Any]:
     attacker_win = total_power_a > total_power_d
 
     # محاسبه تلفات
-    power_ratio = total_power_a / total_power_d if total_power_d > 0 else 1
     if attacker_win:
-        attacker_loss_percent = random.uniform(0.05, 0.25)
-        defender_loss_percent = random.uniform(0.30, 0.60)
+        # Loser (Defender) loses 20%-40%
+        defender_loss_percent = random.uniform(0.20, 0.40)
+        # Winner (Attacker) loses based on power ratio formula
+        ratio = total_power_d / total_power_a
+        attacker_loss_percent = max(0.01, min(0.20, 0.25 * ratio))
     else:
-        attacker_loss_percent = random.uniform(0.30, 0.60)
-        defender_loss_percent = random.uniform(0.05, 0.25)
+        # Loser (Attacker) loses 20%-40%
+        attacker_loss_percent = random.uniform(0.20, 0.40)
+        # Winner (Defender) loses based on power ratio formula
+        ratio = total_power_a / total_power_d
+        defender_loss_percent = max(0.01, min(0.20, 0.25 * ratio))
 
     attacker_losses = {}
     defender_losses = {}
+
+    # قابلیت درمان (Medics/Heal Generals)
+    a_heal_bonus = sum(g.get('bonus_value', 0) for g in attacker_generals if 'heal' in g.get('bonus_type', ''))
+    if any('medic' in k for k in attacker_units.keys()):
+        a_heal_bonus += 0.35
+
+    d_heal_bonus = sum(g.get('bonus_value', 0) for g in defender_generals if 'heal' in g.get('bonus_type', ''))
+    if any('medic' in k for k in defender_units.keys()):
+        d_heal_bonus += 0.35
+
     for unit_type, data in attacker_units.items():
         loss = int(data['count'] * attacker_loss_percent)
+        if a_heal_bonus > 0 and loss > 0:
+            healed = int(loss * min(1.0, a_heal_bonus))
+            loss -= healed
         if loss > 0:
             attacker_losses[unit_type] = loss
+
     for unit_type, data in defender_units.items():
         loss = int(data['count'] * defender_loss_percent)
+        if d_heal_bonus > 0 and loss > 0:
+            healed = int(loss * min(1.0, d_heal_bonus))
+            loss -= healed
         if loss > 0:
             defender_losses[unit_type] = loss
 
@@ -1414,6 +1497,7 @@ def show_market_menu(chat_id: int, user_id: int, message_id: Optional[int] = Non
         rows = [
             [inline_btn("➕ ایجاد آفر فروش", "market_create", "success")],
             [inline_btn("🛍️ خرید آفر", "market_buy", "success")],
+            [inline_btn("🛠 مدیریت آفرهای من", "market_manage", "warning")],
             [inline_btn("🏠 بازگشت", "main_menu", "primary")]
         ]
         markup = build_inline_keyboard(rows)
@@ -1435,11 +1519,10 @@ def show_alliance_menu(chat_id: int, user_id: int, message_id: Optional[int] = N
             text += f"• {get_username_or_name(m)} (سطح {m['level']}) — نقش: {m['role']}\n"
             
         rows = [
-            [inline_btn("💰 اهدا به خزانه", "alliance_donate", "success"), inline_btn("💬 ارسال پیام به اتحاد", "alliance_chat", "primary")],
-            [inline_btn("🌍 نقشه مناطق", "alliance_territory", "primary")]
+            [inline_btn("💰 اهدا به خزانه", "alliance_donate", "success"), inline_btn("📤 برداشت از خزانه", "alliance_withdraw", "danger")],
+            [inline_btn("💬 ارسال پیام به اتحاد", "alliance_chat", "primary"), inline_btn("🌍 نقشه مناطق", "alliance_territory", "primary")]
         ]
         if alliance['leader_id'] == user_id:
-            rows.append([inline_btn("📤 برداشت از خزانه", "alliance_withdraw", "danger")])
             rows.append([inline_btn("⚙️ تنظیم نقش اعضا", "alliance_roles", "warning"), inline_btn("⬆️ افزایش ظرفیت (2000 سکه)", "alliance_upgrade_capacity", "success")])
             rows.append([inline_btn("👢 اخراج عضو", "alliance_kick", "danger"), inline_btn("🛒 فروش اتحاد", "alliance_sell", "success")])
             rows.append([inline_btn("⚔️ جنگ قبیله‌ای", "alliance_war_prompt", "danger"), inline_btn("🕊 درخواست صلح", "alliance_peace_prompt", "success")])
@@ -1541,6 +1624,7 @@ def show_bounty_menu(chat_id: int, user_id: int, message_id: Optional[int] = Non
         rows = [
             [inline_btn("🎯 قرار دادن جایزه", "bounty_place", "warning")],
             [inline_btn("⚔️ دریافت جایزه", "bounty_claim", "success")],
+            [inline_btn("🛠 مدیریت جایزه‌های من", "bounty_manage", "warning")],
             [inline_btn("🏠 بازگشت", "main_menu", "primary")]
         ]
         markup = build_inline_keyboard(rows)
@@ -1618,6 +1702,11 @@ def process_alliance_withdraw(message):
         resource = parts[0].lower()
         amount = int(parts[1])
         user_id = message.from_user.id
+
+        if is_war_locked(user_id):
+            bot.send_message(message.chat.id, "❌ در حین جنگ نمی‌توانید تراکنش انجام دهید.")
+            return
+
         alliance = get_alliance(user_id)
         if not alliance or resource not in ['coins', 'wood', 'stone', 'food']: return
         
@@ -1743,80 +1832,114 @@ def process_alliance_war(message):
         bot.send_message(message.chat.id, "❌ شما با این اتحاد در صلح هستید! برای حمله ابتدا باید پیمان صلح را بشکنید.")
         return
 
+    # Clear old volunteers just in case
+    with get_connection() as conn:
+        conn.execute("DELETE FROM war_volunteers WHERE alliance_id IN (?, ?)", (attacker_alliance['id'], target_alliance['id']))
 
-    bot.send_message(message.chat.id, f"⏳ در حال آماده‌سازی نیروهای اتحاد برای جنگ با {target_alliance_name}...\nنبرد دقیقاً 1 دقیقه دیگر آغاز می‌شود!")
+    markup = build_inline_keyboard([[inline_btn("⚔️ شرکت در جنگ", "join_war", "danger")]])
 
-    try:
-        target_leader_id = target_alliance['leader_id']
-        bot.send_message(target_leader_id, f"⚠️ هشدار! اتحاد {attacker_alliance['name']} به اتحاد شما اعلان جنگ داده است!\nنبرد دقیقاً 1 دقیقه دیگر آغاز می‌شود. نیروهای خود را آماده کنید!")
-    except Exception as e:
-        print(f"Failed to send warning to alliance leader {target_leader_id}: {e}")
+    # Broadcast to attacker
+    att_members = get_alliance_members(attacker_alliance['id'])
+    for m in att_members:
+        set_war_lock(m['user_id'], 1)
+        try: bot.send_message(m['user_id'], f"⚔️ لیدر اعلان جنگ علیه اتحاد {target_alliance_name} کرده است! شما 60 ثانیه فرصت دارید داوطلب شوید.", reply_markup=markup)
+        except: pass
 
-    timer = threading.Timer(60.0, execute_alliance_war, args=[attacker_alliance['id'], target_alliance['id'], message.chat.id, target_leader_id])
+    # Broadcast to defender
+    def_members = get_alliance_members(target_alliance['id'])
+    for m in def_members:
+        set_war_lock(m['user_id'], 1)
+        try: bot.send_message(m['user_id'], f"⚠️ هشدار! اتحاد {attacker_alliance['name']} به ما اعلان جنگ داده است! 60 ثانیه برای اعزام نیرو و دفاع فرصت دارید.", reply_markup=markup)
+        except: pass
+
+    timer = threading.Timer(60.0, execute_alliance_war, args=[attacker_alliance['id'], target_alliance['id'], message.chat.id, target_alliance['leader_id']])
     timer.start()
 
 def execute_alliance_war(att_alliance_id: int, def_alliance_id: int, att_chat_id: int, def_leader_id: int):
-    att_members = get_alliance_members(att_alliance_id)
-    def_members = get_alliance_members(def_alliance_id)
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT user_id FROM war_volunteers WHERE alliance_id = ?", (att_alliance_id,))
+        att_vols = [r['user_id'] for r in cur.fetchall()]
+        cur.execute("SELECT user_id FROM war_volunteers WHERE alliance_id = ?", (def_alliance_id,))
+        def_vols = [r['user_id'] for r in cur.fetchall()]
 
-    # Sort by total_soldiers DESC
-    att_members.sort(key=lambda x: x['total_soldiers'], reverse=True)
-    def_members.sort(key=lambda x: x['total_soldiers'], reverse=True)
+        # Free war locks
+        conn.execute("UPDATE users SET is_in_war = 0 WHERE alliance_id IN (?, ?)", (att_alliance_id, def_alliance_id))
+        conn.execute("DELETE FROM war_volunteers WHERE alliance_id IN (?, ?)", (att_alliance_id, def_alliance_id))
 
-    # Select top 3 (or less if fewer members)
-    att_fighters = att_members[:3]
-    def_fighters = def_members[:3]
+    att_total_attack = 0
+    att_total_defense = 0
+    att_users = []
 
-    fights_count = min(len(att_fighters), len(def_fighters))
-    if fights_count == 0:
-        return # Should not happen
+    for uid in att_vols:
+        u = get_user_raw(uid)
+        if u:
+            att_total_attack += u['attack_power']
+            att_total_defense += u['defense_power']
+            att_users.append(u)
 
-    att_wins = 0
-    def_wins = 0
-    report = "⚔️ <b>گزارش نبرد قبیله‌ای</b>\n\n"
+    def_total_attack = 0
+    def_total_defense = 0
+    def_users = []
 
-    for i in range(fights_count):
-        a_id = att_fighters[i]['user_id']
-        d_id = def_fighters[i]['user_id']
-        result = simulate_battle(a_id, d_id)
+    for uid in def_vols:
+        u = get_user_raw(uid)
+        if u:
+            def_total_attack += u['attack_power']
+            def_total_defense += u['defense_power']
+            def_users.append(u)
 
-        a_name = get_username_or_name(get_user_raw(a_id))
-        d_name = get_username_or_name(get_user_raw(d_id))
-
-        if result['winner'] == a_id:
-            att_wins += 1
-            report += f"🥊 نبرد {i+1}: {a_name} 🆚 {d_name} 🏆 برنده: {a_name}\n"
-        elif result['winner'] == d_id:
-            def_wins += 1
-            report += f"🥊 نبرد {i+1}: {a_name} 🆚 {d_name} 🏆 برنده: {d_name}\n"
-        else:
-            report += f"🥊 نبرد {i+1}: {a_name} 🆚 {d_name} 🏆 نتیجه: نامشخص\n"
-
+    report = "⚔️ <b>گزارش نبرد مجموع (Total War)</b>\n\n"
+    report += f"⚔️ قدرت حمله مهاجمین: {format_number(att_total_attack)}\n"
+    report += f"🛡 قدرت دفاع مدافعین: {format_number(def_total_defense)}\n"
     report += "\n━━━━━━━━━━━━━━━━\n"
 
-    if att_wins > def_wins:
-        report += "🎉 <b>اتحاد شما پیروز شد!</b>\nسطح اتحاد افزایش یافت."
+    # Evaluate Winner
+    winner_is_att = None
+    if att_total_attack > def_total_defense:
+        winner_is_att = True
+    elif def_total_attack > att_total_defense:
+        winner_is_att = False
+
+    if winner_is_att is True:
+        report += "🎉 <b>اتحاد مهاجم پیروز شد!</b>\n"
         with get_connection() as conn:
             conn.execute("UPDATE alliances SET level = level + 1 WHERE id = ?", (att_alliance_id,))
-        for m in att_members:
-            add_exp(m['user_id'], 500, att_chat_id)
 
-    elif def_wins > att_wins:
-        report += "💀 <b>اتحاد شما شکست خورد!</b> اتحاد حریف پیروز شد."
+        # Distribute loot (basic algorithm: winner takes 10% of losers coins distributed proportionally)
+        total_loot = sum([int(u['coins'] * 0.1) for u in def_users])
+        for du in def_users:
+            update_user(du['user_id'], coins=int(du['coins']*0.9))
+
+        for au in att_users:
+            add_exp(au['user_id'], 500, au['user_id'])
+            if att_total_attack > 0:
+                share = au['attack_power'] / att_total_attack
+                my_loot = int(total_loot * share)
+                update_user(au['user_id'], coins=au['coins'] + my_loot)
+
+    elif winner_is_att is False:
+        report += "🛡 <b>اتحاد مدافع با موفقیت دفاع کرد!</b>\n"
         with get_connection() as conn:
             conn.execute("UPDATE alliances SET level = level + 1 WHERE id = ?", (def_alliance_id,))
-        for m in def_members:
-            add_exp(m['user_id'], 500, def_leader_id) # Using def_leader_id as fallback
+
+        total_loot = sum([int(u['coins'] * 0.1) for u in att_users])
+        for au in att_users:
+            update_user(au['user_id'], coins=int(au['coins']*0.9))
+
+        for du in def_users:
+            add_exp(du['user_id'], 500, du['user_id'])
+            if def_total_defense > 0:
+                share = du['defense_power'] / def_total_defense
+                my_loot = int(total_loot * share)
+                update_user(du['user_id'], coins=du['coins'] + my_loot)
     else:
-        report += "🤝 <b>نبرد مساوی شد!</b>"
+        report += "🤝 <b>نبرد مساوی شد! (بدون غنیمت)</b>\n"
 
-    try:
-        bot.send_message(att_chat_id, report)
-    except: pass
-
-    try:
-        bot.send_message(def_leader_id, report.replace("اتحاد شما پیروز شد", "اتحاد حریف پیروز شد").replace("اتحاد شما شکست خورد", "اتحاد شما پیروز شد"))
-    except: pass
+    # Broadcast report
+    for uid in att_vols + def_vols:
+        try: bot.send_message(uid, report)
+        except: pass
 
 
 def show_leaderboard(chat_id: int, user_id: int, message_id: Optional[int] = None):
@@ -1971,6 +2094,18 @@ def activate_group(message):
         return
     set_exclusive_chat(message.chat.id)
     bot.reply_to(message, "✅ این گروه به عنوان گروه اختصاصی ربات فعال شد.")
+
+
+@bot.message_handler(func=lambda m: m.text.strip().lower() == "راهنما")
+def game_guide(message):
+    text = "📖 <b>راهنمای بازی امپراطوری</b>\n\n"
+    text += "🏰 <b>ارتش و نبرد:</b>\nشما می‌توانید با استفاده از منابع خود، واحدهای مختلفی استخدام کنید. ارتش شما برای حمله به باس جهانی، تسخیر قلعه‌ها و نبردهای PvP استفاده می‌شود. تاکتیک‌ها کلید پیروزی هستند.\n\n"
+    text += "👥 <b>اتحاد:</b>\nبا ساخت یا عضویت در اتحاد، می‌توانید در جنگ‌های قبیله‌ای (Clan Wars) شرکت کنید، از خزانه اشتراکی استفاده کرده و به کمک هم مناطق روی نقشه را تسخیر کنید.\n\n"
+    text += "🛒 <b>بازار:</b>\nدر بازار می‌توانید منابع یا حتی اتحاد خود را به فروش بگذارید و منابع مورد نیازتان را بخرید.\n\n"
+    text += "💰 <b>جایزه‌بگیر (Bounty):</b>\nمی‌توانید روی سر بازیکنان قوی جایزه بگذارید، و یا با شکست دادن آن‌ها جایزه‌ها را تصاحب کنید.\n\n"
+    text += "🌍 <b>باس جهانی:</b>\nباس جهانی رویدادی است که در آن تمام بازیکنان می‌توانند با اعزام نیرو به آن آسیب وارد کنند و پاداش عظیم بگیرند."
+
+    bot.send_message(message.chat.id, text)
 
 @bot.message_handler(content_types=['text'])
 def global_text_handler(message):
@@ -2261,6 +2396,54 @@ def callback_handler(call: types.CallbackQuery):
             return
 
         # 🛒 بازار
+
+        if data == 'market_manage':
+            with get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT * FROM market_offers WHERE seller_id = ? AND active = 1", (user_id,))
+                my_offers = cur.fetchall()
+
+            text = "🛠 <b>آفرهای شما در بازار</b>\n\n"
+            rows = []
+            if not my_offers:
+                text += "شما هیچ آفر فعالی ندارید."
+            else:
+                text += "برای لغو هر آفر روی دکمه مربوطه کلیک کنید:\n"
+                for o in my_offers:
+                    o = dict(o)
+                    if o['item_type'] == 'alliance':
+                        label = f"لغو آفر فروش اتحاد (آیدی: {o['id']})"
+                    else:
+                        label = f"لغو آفر {o['item_type']} (آیدی: {o['id']})"
+                    rows.append([inline_btn(label, f"market_cancel_{o['id']}", "danger")])
+
+            rows.append([inline_btn("🏠 بازگشت", "market_menu", "primary")])
+            edit_or_send(chat_id, message_id, text, build_inline_keyboard(rows), user_id)
+            return
+
+        if data.startswith('market_cancel_'):
+            offer_id = int(data.replace('market_cancel_', ''))
+            with get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT * FROM market_offers WHERE id = ? AND seller_id = ? AND active = 1", (offer_id, user_id))
+                offer = cur.fetchone()
+
+                if offer:
+                    offer = dict(offer)
+                    conn.execute("UPDATE market_offers SET active = 0 WHERE id = ?", (offer_id,))
+                    if offer['item_type'] != 'alliance':
+                        user = get_user_raw(user_id)
+                        update_user(user_id, **{offer['item_type']: user[offer['item_type']] + offer['quantity']})
+
+                    bot.answer_callback_query(call.id, "✅ آفر شما لغو شد و منابع/اتحاد بازگردانده شد.", show_alert=True)
+                else:
+                    bot.answer_callback_query(call.id, "❌ آفر یافت نشد یا از قبل لغو شده است.", show_alert=True)
+
+            # Show market manage again
+            call.data = 'market_manage'
+            callback_handler(call)
+            return
+
         if data == 'market_menu':
             show_market_menu(chat_id, user_id, message_id)
             return
@@ -2344,6 +2527,18 @@ def callback_handler(call: types.CallbackQuery):
 
         if data.startswith('peace_reject_'):
             bot.edit_message_text("❌ درخواست صلح رد شد.", chat_id=chat_id, message_id=message_id)
+            return
+
+
+        if data == 'join_war':
+            alliance = get_alliance(user_id)
+            if not alliance: return
+            with get_connection() as conn:
+                try:
+                    conn.execute("INSERT INTO war_volunteers (user_id, alliance_id, role) VALUES (?, ?, 'member')", (user_id, alliance['id']))
+                    bot.answer_callback_query(call.id, "✅ شما با موفقیت به عنوان داوطلب ثبت نام کردید!", show_alert=True)
+                except sqlite3.IntegrityError:
+                    bot.answer_callback_query(call.id, "⚠️ شما قبلاً داوطلب شده‌اید.", show_alert=True)
             return
 
         if data == 'alliance_war_prompt':
@@ -2595,6 +2790,13 @@ def process_pvp_attack(message):
     attacker_id = message.from_user.id
     target_empire_name = message.text.strip()
 
+    attacker = get_user_raw(attacker_id)
+    if attacker and now() - attacker['last_pvp_attack'] < 3600:
+        remaining = 3600 - (now() - attacker['last_pvp_attack'])
+        mins, secs = divmod(remaining, 60)
+        bot.send_message(message.chat.id, f"⏳ فرمانده، نیروهای شما در حال استراحت هستند! لطفاً {mins} دقیقه و {secs} ثانیه دیگر برای حمله مجدد صبر کنید.")
+        return
+
     target_user = get_user_by_empire_name(target_empire_name)
     if not target_user:
         bot.send_message(message.chat.id, "❌ کاربری با این نام یافت نشد.")
@@ -2620,10 +2822,15 @@ def process_pvp_attack(message):
     except Exception as e:
         print(f"Failed to send warning to defender {defender_id}: {e}")
 
+    set_war_lock(attacker_id, 1)
+    set_war_lock(defender_id, 1)
     timer = threading.Timer(60.0, execute_delayed_pvp, args=[attacker_id, defender_id, message.chat.id])
     timer.start()
 
 def execute_delayed_pvp(attacker_id: int, defender_id: int, chat_id: int):
+    set_war_lock(attacker_id, 0)
+    set_war_lock(defender_id, 0)
+    update_user(attacker_id, last_pvp_attack=now())
     result = simulate_battle(attacker_id, defender_id)
     if result['winner'] is None:
         try:
@@ -2981,6 +3188,11 @@ def process_admin_wipe(message):
 # ============================================================
 def process_market_create(message):
     try:
+        user_id = message.from_user.id
+        if is_war_locked(user_id):
+            bot.send_message(message.chat.id, "❌ در حین جنگ نمی‌توانید آفر ایجاد کنید.")
+            return
+
         parts = message.text.split()
         if len(parts) != 3:
             bot.send_message(message.chat.id, "❌ فرمت صحیح: منبع تعداد قیمت\nمثال: wood 100 500")
@@ -3025,6 +3237,11 @@ def process_alliance_create(message):
 
 def process_alliance_donate(message):
     try:
+        user_id = message.from_user.id
+        if is_war_locked(user_id):
+            bot.send_message(message.chat.id, "❌ در حین جنگ نمی‌توانید تراکنش انجام دهید.")
+            return
+
         parts = message.text.split()
         if len(parts) != 2:
             bot.send_message(message.chat.id, "❌ فرمت: منبع مقدار\nمثال: coins 500")
