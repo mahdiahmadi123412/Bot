@@ -461,20 +461,37 @@ def now() -> int:
 def add_exp(user_id: int, amount: int, chat_id: int):
     user = get_user(user_id)
     if not user: return
-    new_exp = user['exp'] + amount
-    new_level = user['level']
-    req_exp = new_level * 1000  # هر سطح به (سطح فعلی * 1000) تجربه نیاز دارد
     
-    leveled_up = False
-    while new_exp >= req_exp:
-        new_exp -= req_exp
-        new_level += 1
-        req_exp = new_level * 1000
-        leveled_up = True
-        
-    update_user(user_id, exp=new_exp, level=new_level)
+    total_exp = user['exp'] + amount
+    current_level = user['level']
+
+    # We know that sum of req_exp from level 1 to L is roughly:
+    # Total Required = 1000 * L * (L+1) / 2
+    # So if we have total cumulative EXP, we can solve for L.
+    # But since current level could be anything, it's easier to iterate safely or use math.
+    import math
+
+    # Calculate cumulative EXP up to current level
+    # Base formula: cumulative_exp_for_level = 1000 * L * (L-1) / 2
+    cumulative_exp = 500 * current_level * (current_level - 1)
+    new_cumulative_exp = cumulative_exp + total_exp
+
+    # Solve for new level: 500 * L^2 - 500 * L - new_cumulative_exp = 0
+    # L = (500 + sqrt(250000 - 4*500*(-new_cumulative_exp))) / 1000
+    # L = (1 + sqrt(1 + 8 * new_cumulative_exp / 1000)) / 2
+
+    new_level = math.floor((1 + math.sqrt(1 + 8 * new_cumulative_exp / 1000)) / 2)
+    new_level = max(current_level, new_level)
+
+    new_req_cumulative = 500 * new_level * (new_level - 1)
+    new_exp_remainder = int(new_cumulative_exp - new_req_cumulative)
+
+    leveled_up = new_level > current_level
+
+    update_user(user_id, exp=new_exp_remainder, level=new_level)
     if leveled_up:
-        bot.send_message(chat_id, f"🎉 <b>تبریک فرمانده!</b> سطح امپراطوری شما به <b>{new_level}</b> ارتقا یافت!")
+        try: bot.send_message(chat_id, f"🎉 <b>تبریک فرمانده!</b> سطح امپراطوری شما به <b>{new_level}</b> ارتقا یافت!")
+        except: pass
 
 # ============================================================
 # ⚙️ سیستم تولید خودکار منابع
@@ -1233,8 +1250,11 @@ def process_empire_name(message):
         f"نیروی اولیه: {format_number(user['total_soldiers'])} سرباز\n"
         f"از منوی زیر امپراتوری خودت را مدیریت کن 👇"
     )
-    # ویرایش پیام قبلی (پیام prompt) به منوی اصلی
-    bot.edit_message_text(text, chat_id=message.chat.id, message_id=message.message_id - 1, reply_markup=main_menu(user_id))
+    try:
+        # First send the success message with main menu
+        bot.send_message(message.chat.id, text, reply_markup=main_menu(user_id))
+    except Exception as e:
+        print(f"Error in process_empire_name sending message: {e}")
 
 @bot.message_handler(commands=['admin'])
 def admin_command(message):
@@ -2049,10 +2069,10 @@ def process_alliance_peace(message):
     except:
         bot.send_message(message.chat.id, "❌ خطا در ارسال پیام به لیدر مقابل.")
 
-def accept_peace_treaty(chat_id: int, user_id: int, req_alliance_id: int, target_alliance_id: int, message_id: int):
+def accept_peace_treaty(call_id: str, chat_id: int, user_id: int, req_alliance_id: int, target_alliance_id: int, message_id: int):
     target_alliance = get_alliance(user_id)
     if not target_alliance or target_alliance['id'] != target_alliance_id or target_alliance['leader_id'] != user_id:
-        bot.answer_callback_query(chat_id, "شما مجاز به این کار نیستید.", show_alert=True)
+        bot.answer_callback_query(call_id, "شما مجاز به این کار نیستید.", show_alert=True)
         return
 
     if not is_in_peace(req_alliance_id, target_alliance_id):
@@ -2522,7 +2542,7 @@ def callback_handler(call: types.CallbackQuery):
             parts = data.split('_')
             req_alliance_id = int(parts[2])
             target_alliance_id = int(parts[3])
-            accept_peace_treaty(chat_id, user_id, req_alliance_id, target_alliance_id, message_id)
+            accept_peace_treaty(call.id, chat_id, user_id, req_alliance_id, target_alliance_id, message_id)
             return
 
         if data.startswith('peace_reject_'):
@@ -3160,6 +3180,30 @@ def process_admin_balance_step2(message, target_user_id):
 
 
 
+
+def process_broadcast(message):
+    if not is_admin_user(message.from_user.id): return
+    text = message.text.strip()
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT user_id FROM users")
+        users = cur.fetchall()
+    count = 0
+    for u in users:
+        try:
+            bot.send_message(u['user_id'], f"📢 پیام مدیریت:\n\n{text}")
+            count += 1
+        except: pass
+    bot.send_message(message.chat.id, f"✅ پیام به {count} نفر ارسال شد.")
+
+def process_admin_user_manage(message):
+    if not is_admin_user(message.from_user.id): return
+    bot.send_message(message.chat.id, "این بخش در دست توسعه است.")
+
+def process_admin_economy(message):
+    if not is_admin_user(message.from_user.id): return
+    bot.send_message(message.chat.id, "این بخش در دست توسعه است.")
+
 def process_admin_wipe(message):
     if not is_admin_user(message.from_user.id):
         return
@@ -3181,7 +3225,7 @@ def process_admin_wipe(message):
         cur.execute("UPDATE users SET coins = 500, wood = 400, stone = 350, food = 600, total_soldiers = 0, "
                     "attack_power = 0, defense_power = 0, level = 1, exp = 0, alliance_id = NULL, "
                     "generals_json = '[]' WHERE user_id = ?", (target_id,))
-        bot.send_message(message.chat.id, f"✅ امپراتوری کاربر {user['empire_name']} به طور کامل پاکسازی شد.")
+    bot.send_message(message.chat.id, f"✅ امپراتوری کاربر {user['empire_name']} به طور کامل پاکسازی شد.")
 
 # ============================================================
 # 🧾 هندلرهای مرحله‌ای (Next Step) - جایگزینی آیدی با نام امپراطوری
