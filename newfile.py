@@ -1097,8 +1097,8 @@ def attack_world_boss(user_id: int, soldiers: int) -> Dict[str, Any]:
 def admin_main_menu() -> InlineKeyboardMarkup:
     rows = [
         [inline_btn("📊 آمار سرور", "admin_stats", "primary"), inline_btn("📨 ارسال پیام همگانی", "admin_broadcast", "primary")],
-        [inline_btn("👤 مدیریت کاربر", "admin_user_manage", "primary"), inline_btn("💰 اقتصاد", "admin_economy", "success")],
-        [inline_btn("⚔️ رویدادها", "admin_events", "success"), inline_btn("⚖️ تغییر موجودی", "admin_change_balance", "warning")],
+        [inline_btn("👤 مدیریت کاربر", "admin_user_manage", "primary"), inline_btn("⚖️ تغییر موجودی", "admin_change_balance", "warning")],
+        [inline_btn("⚔️ رویدادها", "admin_events", "success")],
         [inline_btn("🔨 بن کردن", "admin_ban", "danger"), inline_btn("🔓 آنبن کردن", "admin_unban", "success")],
         [inline_btn("🧹 پاکسازی", "admin_wipe", "danger"), inline_btn("📢 ثبت عضویت اجباری", "admin_force_join", "danger")],
         [inline_btn("❌ خروج", "admin_exit", "danger")]
@@ -2157,6 +2157,11 @@ def game_guide(message):
 @bot.message_handler(content_types=['text'])
 def global_text_handler(message):
     user_id = message.from_user.id
+    user = get_user_raw(user_id)
+    if user and user.get('banned') == 1:
+        bot.send_message(message.chat.id, "⛔️ حساب شما مسدود است.")
+        return
+
     text = message.text.strip().lower()
 
     # Cancellation check
@@ -2194,8 +2199,6 @@ def global_text_handler(message):
         process_broadcast(message)
     elif action == 'process_admin_user_manage':
         process_admin_user_manage(message)
-    elif action == 'process_admin_economy':
-        process_admin_economy(message)
     elif action == 'process_admin_ban':
         process_admin_ban(message)
     elif action == 'process_admin_unban':
@@ -2250,6 +2253,11 @@ def global_text_handler(message):
 def callback_handler(call: types.CallbackQuery):
     try:
         user_id = call.from_user.id
+        user = get_user_raw(user_id)
+        if user and user.get('banned') == 1:
+            bot.answer_callback_query(call.id, "⛔️ حساب شما مسدود است.", show_alert=True)
+            return
+
         chat_id = call.message.chat.id
         data = call.data
         message_id = call.message.message_id if call.message else None
@@ -2379,10 +2387,6 @@ def callback_handler(call: types.CallbackQuery):
         if data == 'admin_user_manage' and is_admin_user(user_id):
             msg = bot.send_message(chat_id, "👤 نام امپراطوری کاربر را ارسال کنید:")
             set_user_state(user_id, 'process_admin_user_manage')
-            return
-        if data == 'admin_economy' and is_admin_user(user_id):
-            msg = bot.send_message(chat_id, "💰 نام امپراطوری کاربر را بفرستید:")
-            set_user_state(user_id, 'process_admin_economy')
             return
         if data == 'admin_events' and is_admin_user(user_id):
             spawn_castles(2)
@@ -3184,30 +3188,7 @@ def process_admin_user_manage(message):
     )
     bot.send_message(message.chat.id, text)
 
-def process_admin_economy(message):
-    if not is_admin_user(message.from_user.id):
-        return
-    parts = message.text.split()
-    if len(parts) < 3:
-        bot.send_message(message.chat.id, "❌ فرمت صحیح: نام امپراطوری | منبع | مقدار\n"
-                                          "منبع: coins/wood/stone/food\n"
-                                          "مثال: MyEmpire coins 1000")
-        return
-    try:
-        empire_name = parts[0]
-        resource = parts[1]
-        amount = int(parts[2])
-        if resource not in ['coins', 'wood', 'stone', 'food']:
-            bot.send_message(message.chat.id, "❌ منبع نامعتبر است.")
-            return
-        user = get_user_by_empire_name(empire_name)
-        if not user:
-            bot.send_message(message.chat.id, "❌ کاربر یافت نشد.")
-            return
-        update_user(user['user_id'], **{resource: user[resource] + amount})
-        bot.send_message(message.chat.id, f"✅ {amount} {resource} به کاربر {user['empire_name']} اضافه شد.")
-    except (ValueError, IndexError):
-        bot.send_message(message.chat.id, "❌ فرمت نامعتبر است.")
+
 
 def process_admin_ban(message):
     if not is_admin_user(message.from_user.id):
@@ -3308,11 +3289,30 @@ def process_broadcast(message):
 
 def process_admin_user_manage(message):
     if not is_admin_user(message.from_user.id): return
-    bot.send_message(message.chat.id, "این بخش در دست توسعه است.")
+    name = message.text.strip()
+    target_user = get_user_by_empire_name(name)
+    if not target_user:
+        bot.send_message(message.chat.id, "❌ کاربر یافت نشد.")
+        return
 
-def process_admin_economy(message):
-    if not is_admin_user(message.from_user.id): return
-    bot.send_message(message.chat.id, "این بخش در دست توسعه است.")
+    alliance = get_alliance(target_user['user_id'])
+    alliance_name = alliance['name'] if alliance else "ندارد"
+    ban_status = "بله" if target_user.get('banned') == 1 else "خیر"
+
+    text = f"👤 <b>اطلاعات کاربری امپراطوری {target_user['empire_name']}</b>\n\n"
+    text += f"🔹 آیدی عددی: {target_user['user_id']}\n"
+    text += f"🔹 سطح: {target_user['level']}\n"
+    text += f"🔹 سکه: {format_number(target_user['coins'])}\n"
+    text += f"🔹 چوب: {format_number(target_user['wood'])}\n"
+    text += f"🔹 سنگ: {format_number(target_user['stone'])}\n"
+    text += f"🔹 غذا: {format_number(target_user['food'])}\n"
+    text += f"🔹 تعداد کل سربازان: {format_number(target_user['total_soldiers'])}\n"
+    text += f"🔹 نام اتحاد: {alliance_name}\n"
+    text += f"🔹 مسدود شده: {ban_status}\n"
+
+    bot.send_message(message.chat.id, text)
+
+
 
 def process_admin_wipe(message):
     if not is_admin_user(message.from_user.id):
