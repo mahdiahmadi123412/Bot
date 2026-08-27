@@ -1204,7 +1204,7 @@ def start_command(message):
     if not user:
         with get_connection() as conn:
             conn.execute("""
-                INSERT INTO users (user_id, username, first_name, joined_at, last_production)
+                INSERT OR IGNORE INTO users (user_id, username, first_name, joined_at, last_production)
                 VALUES (?, ?, ?, ?, ?)
             """, (user_id, message.from_user.username, message.from_user.first_name, int(time.time()), int(time.time())))
 
