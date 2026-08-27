@@ -350,16 +350,19 @@ def get_user_raw(user_id: int) -> Optional[Dict[str, Any]]:
         return dict(row) if row else None
 
 
-def set_war_lock(user_id: int, status: int):
+def set_war_lock(user_id: int, duration_seconds: int):
     with get_connection() as conn:
-        conn.execute("UPDATE users SET is_in_war = ? WHERE user_id = ?", (status, user_id))
+        lock_until = int(time.time()) + duration_seconds if duration_seconds > 0 else 0
+        conn.execute("UPDATE users SET is_in_war = ? WHERE user_id = ?", (lock_until, user_id))
 
 def is_war_locked(user_id: int) -> bool:
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute("SELECT is_in_war FROM users WHERE user_id = ?", (user_id,))
         row = cur.fetchone()
-        return bool(row and row['is_in_war'] == 1)
+        if row and row['is_in_war']:
+            return int(time.time()) < row['is_in_war']
+        return False
 
 def get_user_by_empire_name(name: str) -> Optional[Dict[str, Any]]:
     with get_connection() as conn:
@@ -1001,7 +1004,6 @@ def place_bounty(target_id: int, issuer_id: int, amount: int) -> bool:
 def claim_bounty(bounty_id: int, hunter_id: int) -> bool:
     with get_connection() as conn:
         cur = conn.cursor()
-        cur.execute("BEGIN IMMEDIATE")
         cur.execute("SELECT * FROM bounties WHERE id = ? AND active = 1", (bounty_id,))
         bounty = cur.fetchone()
         if not bounty:
@@ -1070,7 +1072,6 @@ def attack_world_boss(user_id: int, soldiers: int) -> Dict[str, Any]:
 
     with get_connection() as conn:
         cur = conn.cursor()
-        cur.execute("BEGIN IMMEDIATE")
         cur.execute("SELECT hp FROM world_boss WHERE id = ? AND active = 1", (boss['id'],))
         current_boss = cur.fetchone()
         if not current_boss:
@@ -1888,14 +1889,14 @@ def process_alliance_war(message):
     # Broadcast to attacker
     att_members = get_alliance_members(attacker_alliance['id'])
     for m in att_members:
-        set_war_lock(m['user_id'], 1)
+        set_war_lock(m['user_id'], 65)
         try: bot.send_message(m['user_id'], f"⚔️ لیدر اعلان جنگ علیه اتحاد {target_alliance_name} کرده است! شما 60 ثانیه فرصت دارید داوطلب شوید.", reply_markup=markup)
         except: pass
 
     # Broadcast to defender
     def_members = get_alliance_members(target_alliance['id'])
     for m in def_members:
-        set_war_lock(m['user_id'], 1)
+        set_war_lock(m['user_id'], 65)
         try: bot.send_message(m['user_id'], f"⚠️ هشدار! اتحاد {attacker_alliance['name']} به ما اعلان جنگ داده است! 60 ثانیه برای اعزام نیرو و دفاع فرصت دارید.", reply_markup=markup)
         except: pass
 
@@ -2956,8 +2957,8 @@ def process_pvp_attack(message):
     except Exception as e:
         print(f"Failed to send warning to defender {defender_id}: {e}")
 
-    set_war_lock(attacker_id, 1)
-    set_war_lock(defender_id, 1)
+    set_war_lock(attacker_id, 65)
+    set_war_lock(defender_id, 65)
     timer = threading.Timer(60.0, execute_delayed_pvp, args=[attacker_id, defender_id, message.chat.id])
     timer.start()
 
