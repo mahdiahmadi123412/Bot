@@ -47,10 +47,8 @@ from contextlib import contextmanager
 
 @contextmanager
 def get_connection():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=20.0)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
     try:
         yield conn
         conn.commit()
@@ -68,6 +66,9 @@ def add_column_if_not_exists(conn, table, column, col_type):
         cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
 
 def init_db() -> None:
+    with sqlite3.connect(DB_PATH, check_same_thread=False, timeout=20.0) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
     with get_connection() as conn:
         cur = conn.cursor()
 
@@ -330,8 +331,11 @@ def get_user(user_id: int) -> Optional[Dict[str, Any]]:
         if not row:
             return None
         user = dict(row)
-        ensure_production(user_id, user)
-        # دریافت دوباره بعد از به‌روزرسانی
+
+    ensure_production(user_id, user)
+
+    with get_connection() as conn:
+        cur = conn.cursor()
         cur.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
         user = dict(cur.fetchone())
         return user
@@ -498,14 +502,9 @@ def ensure_production(user_id: int, user: Optional[Dict[str, Any]] = None) -> No
 # ============================================================
 # 🎨 دکمه‌های شیشه‌ای (به‌همراه استایل بصری با ایموجی)
 # ============================================================
-def inline_btn(text: str, callback_data: str, style: str = 'primary') -> InlineKeyboardButton:
-    """ساخت دکمه شیشه‌ای رنگی. فقط از primary، success و danger پشتیبانی می‌شود."""
-    # یک لایه امنیتی: اگر تصادفاً استایل نامعتبری پاس داده شد، پیش‌فرض آبی شود
-    valid_styles = ['primary', 'success', 'danger']
-    if style not in valid_styles:
-        style = 'primary'
-        
-    return InlineKeyboardButton(text=text, callback_data=callback_data, style=style)
+def inline_btn(text: str, callback_data: str, *args, **kwargs) -> InlineKeyboardButton:
+    """ساخت دکمه شیشه‌ای."""
+    return InlineKeyboardButton(text=text, callback_data=callback_data)
 
 
 def inline_row(*buttons: InlineKeyboardButton) -> List[InlineKeyboardButton]:
@@ -904,16 +903,20 @@ def claim_bounty(bounty_id: int, hunter_id: int) -> bool:
         if not bounty:
             return False
         bounty = dict(bounty)
-        # اینجا شبیه‌سازی حمله یا شرطی ساده: اگر هانتر ارتش بیشتری دارد
-        hunter = get_user(hunter_id)
-        target = get_user(bounty['target_id'])
-        if not hunter or not target:
-            return False
-        if hunter['total_soldiers'] <= target['total_soldiers'] * 1.2:
-            return False
+
+    hunter = get_user(hunter_id)
+    target = get_user(bounty['target_id'])
+    if not hunter or not target:
+        return False
+
+    # Simulate a full battle
+    result = simulate_battle(hunter_id, target['user_id'])
+    if result['winner'] == hunter_id:
         update_user(hunter_id, coins=hunter['coins'] + bounty['amount_coins'])
-        cur.execute("UPDATE bounties SET active = 0 WHERE id = ?", (bounty_id,))
+        with get_connection() as conn:
+            conn.execute("UPDATE bounties SET active = 0 WHERE id = ?", (bounty_id,))
         return True
+    return False
 
 # ============================================================
 # 🌋 سیستم باس جهانی و رویدادهای سراسری
@@ -956,10 +959,17 @@ def attack_world_boss(user_id: int, soldiers: int) -> Dict[str, Any]:
     # کسر سربازان اعزامی (تلفات)
     with get_connection() as conn:
         cur = conn.cursor()
-        cur.execute("UPDATE world_boss SET hp = ? WHERE id = ?", (new_hp, boss['id']))
-        cur.execute("INSERT INTO boss_attacks (boss_id, user_id, damage, created_at) VALUES (?, ?, ?, ?)",
-                    (boss['id'], user_id, damage, int(time.time())))
-        return {'success': True, 'damage': damage, 'new_hp': new_hp, 'max_hp': boss['max_hp']}
+        if new_hp == 0:
+            cur.execute("UPDATE world_boss SET hp = 0, active = 0 WHERE id = ?", (boss['id'],))
+            cur.execute("INSERT INTO boss_attacks (boss_id, user_id, damage, created_at) VALUES (?, ?, ?, ?)",
+                        (boss['id'], user_id, damage, int(time.time())))
+            update_user(user_id, coins=user['coins'] + 10000, wood=user['wood'] + 5000)
+            return {'success': True, 'damage': damage, 'new_hp': 0, 'max_hp': boss['max_hp'], 'killed': True}
+        else:
+            cur.execute("UPDATE world_boss SET hp = ? WHERE id = ?", (new_hp, boss['id']))
+            cur.execute("INSERT INTO boss_attacks (boss_id, user_id, damage, created_at) VALUES (?, ?, ?, ?)",
+                        (boss['id'], user_id, damage, int(time.time())))
+            return {'success': True, 'damage': damage, 'new_hp': new_hp, 'max_hp': boss['max_hp'], 'killed': False}
 
 # ============================================================
 # 👑 پنل مدیریت (Admin Panel)
@@ -1177,6 +1187,12 @@ def edit_or_send(chat_id, message_id, text, reply_markup, user_id):
         try:
             bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=reply_markup)
             set_message_owner(chat_id, message_id, user_id)
+        except telebot.apihelper.ApiTelegramException as e:
+            if "message is not modified" in str(e).lower():
+                pass
+            else:
+                msg = bot.send_message(chat_id, text, reply_markup=reply_markup)
+                set_message_owner(chat_id, msg.message_id, user_id)
         except Exception as e:
             # اگر ویرایش ناموفق بود، پیام جدید بفرست
             msg = bot.send_message(chat_id, text, reply_markup=reply_markup)
@@ -1419,16 +1435,18 @@ def show_alliance_menu(chat_id: int, user_id: int, message_id: Optional[int] = N
             text += f"• {get_username_or_name(m)} (سطح {m['level']}) — نقش: {m['role']}\n"
             
         rows = [
-            [inline_btn("💰 اهدا به خزانه", "alliance_donate", "success"), inline_btn("📤 برداشت از خزانه", "alliance_withdraw", "danger")],
-            [inline_btn("💬 ارسال پیام به اتحاد", "alliance_chat", "primary")],
+            [inline_btn("💰 اهدا به خزانه", "alliance_donate", "success"), inline_btn("💬 ارسال پیام به اتحاد", "alliance_chat", "primary")],
             [inline_btn("🌍 نقشه مناطق", "alliance_territory", "primary")]
         ]
         if alliance['leader_id'] == user_id:
+            rows.append([inline_btn("📤 برداشت از خزانه", "alliance_withdraw", "danger")])
             rows.append([inline_btn("⚙️ تنظیم نقش اعضا", "alliance_roles", "warning"), inline_btn("⬆️ افزایش ظرفیت (2000 سکه)", "alliance_upgrade_capacity", "success")])
             rows.append([inline_btn("👢 اخراج عضو", "alliance_kick", "danger"), inline_btn("🛒 فروش اتحاد", "alliance_sell", "success")])
             rows.append([inline_btn("⚔️ جنگ قبیله‌ای", "alliance_war_prompt", "danger"), inline_btn("🕊 درخواست صلح", "alliance_peace_prompt", "success")])
             rows.append([inline_btn("💔 شکستن پیمان صلح", "alliance_break_peace", "danger")])
             rows.append([inline_btn("❌ انحلال اتحاد", "alliance_delete_req", "danger")])
+        else:
+            rows.append([inline_btn("🚪 خروج از اتحاد", "alliance_leave", "danger")])
         rows.append([inline_btn("📜 اتحادهای در صلح", "alliance_peace_list", "primary")])
             
         rows.append([inline_btn("🏠 بازگشت", "main_menu", "info")])
@@ -1942,6 +1960,18 @@ def process_alliance_break_peace(message):
 
 
 
+@bot.message_handler(func=lambda m: m.text == "فعال" and m.chat.type in ['group', 'supergroup'])
+def activate_group(message):
+    if not is_admin_user(message.from_user.id):
+        bot.reply_to(message, "⛔️ فقط ادمین مجاز به فعال‌سازی گروه است.")
+        return
+    exclusive_chat = get_exclusive_chat()
+    if exclusive_chat is not None and exclusive_chat != message.chat.id:
+        bot.reply_to(message, "⚠️ این ربات قبلاً در گروه دیگری فعال شده است.")
+        return
+    set_exclusive_chat(message.chat.id)
+    bot.reply_to(message, "✅ این گروه به عنوان گروه اختصاصی ربات فعال شد.")
+
 @bot.message_handler(content_types=['text'])
 def global_text_handler(message):
     user_id = message.from_user.id
@@ -2359,6 +2389,19 @@ def callback_handler(call: types.CallbackQuery):
             set_user_state(user_id, 'process_alliance_kick')
             return
             
+        if data == 'alliance_leave':
+            alliance = get_alliance(user_id)
+            if alliance:
+                if alliance['leader_id'] == user_id:
+                    bot.answer_callback_query(call.id, "❌ لیدر نمی‌تواند خارج شود. ابتدا اتحاد را منحل کرده یا انتقال دهید.", show_alert=True)
+                else:
+                    with get_connection() as conn:
+                        conn.execute("DELETE FROM alliance_members WHERE alliance_id = ? AND user_id = ?", (alliance['id'], user_id))
+                        conn.execute("UPDATE users SET alliance_id = NULL WHERE user_id = ?", (user_id,))
+                    bot.answer_callback_query(call.id, "✅ با موفقیت از اتحاد خارج شدید.", show_alert=True)
+                    show_alliance_menu(chat_id, user_id, message_id)
+            return
+
         if data == 'alliance_delete_req':
             markup = build_inline_keyboard([
                 [inline_btn("بله، حذف کن", "alliance_delete_yes", "danger")],
@@ -2371,9 +2414,13 @@ def callback_handler(call: types.CallbackQuery):
             alliance = get_alliance(user_id)
             if alliance and alliance['leader_id'] == user_id:
                 with get_connection() as conn:
+                    # Clear orphaned data first
+                    conn.execute("DELETE FROM market_offers WHERE item_type = 'alliance' AND quantity = ?", (alliance['id'],))
+                    conn.execute("DELETE FROM peace_treaties WHERE alliance_1_id = ? OR alliance_2_id = ?", (alliance['id'], alliance['id']))
+                    conn.execute("DELETE FROM alliance_members WHERE alliance_id = ?", (alliance['id'],))
                     conn.execute("UPDATE users SET alliance_id = NULL WHERE alliance_id = ?", (alliance['id'],))
                     conn.execute("DELETE FROM alliances WHERE id = ?", (alliance['id'],))
-                    edit_or_send(chat_id, message_id, "✅ اتحاد شما با موفقیت منحل شد.", build_inline_keyboard([[inline_btn("🏠 بازگشت", "main_menu", "info")]]), user_id)
+                edit_or_send(chat_id, message_id, "✅ اتحاد شما با موفقیت منحل شد.", build_inline_keyboard([[inline_btn("🏠 بازگشت", "main_menu", "info")]]), user_id)
             return
 
         if data == 'alliance_donate':
@@ -2450,102 +2497,7 @@ def callback_handler(call: types.CallbackQuery):
                 
             edit_or_send(chat_id, message_id, text, build_inline_keyboard([[inline_btn("🏠 بازگشت به اتحاد", "alliance_menu")]]), user_id)
             return
-
-            
-            # محاسبه شانس پیروزی
-            win_chance = user_power / max(1, user_power + region_data['defense'])
-            
-            import random
-            if random.random() < win_chance:
-                # پیروزی در تسخیر منطقه
-                territory = json.loads(alliance.get('territory', '{}'))
-                r_name = region_data['name']
-                
-                # اضافه کردن یا ارتقای سطح منطقه برای اتحاد
-                if r_name in territory:
-                    territory[r_name]['level'] += 1
-                else:
-                    territory[r_name] = {'level': 1}
-                
-                with get_connection() as conn:
-                    conn.execute("UPDATE alliances SET territory = ? WHERE id = ?", (json.dumps(territory, ensure_ascii=False), alliance['id']))
-                
-                    # اعمال تلفات کم به خاطر پیروزی
-                    for unit_type, u_data in units.items():
-                        loss = int(u_data['count'] * 0.10)
-                        if loss > 0: update_army_unit(user_id, unit_type, count_delta=-loss)
-                    update_army_power_fields(user_id)
-                
-                    text = f"🎉 <b>پیروزی سترگ!</b>\n\nشما موفق شدید محافظان <b>{r_name}</b> را در هم بشکنید! قلمرو اتحاد گسترش یافت."
-            else:
-                # شکست در نبرد
-                for unit_type, u_data in units.items():
-                    loss = int(u_data['count'] * 0.30) # تلفات سنگین‌تر در صورت شکست
-                    if loss > 0: update_army_unit(user_id, unit_type, count_delta=-loss)
-                update_army_power_fields(user_id)
-                
-                text = f"❌ <b>شکست سخت!</b>\n\nمحافظان <b>{region_data['name']}</b> بسیار قدرتمند بودند. ۳۰٪ از ارتش شما در این نبرد از بین رفت."
-                
-            edit_or_send(chat_id, message_id, text, build_inline_keyboard([[inline_btn("🏠 بازگشت به اتحاد", "alliance_menu")]]), user_id)
-            return
-      
-
-        # 🎁 ژنرال‌ها
-        if data == 'gacha_menu':
-            show_gacha_menu(chat_id, user_id, message_id)
-            return
-        if data == 'gacha_roll':
-            result = roll_gacha(user_id)
-            if result:
-                text = f"🎉 شما ژنرال {result['name']} را دریافت کردید!"
-            else:
-                text = "❌ سکه کافی ندارید."
-            edit_or_send(chat_id, message_id, text, build_inline_keyboard([
-                [inline_btn("🏠 بازگشت", "main_menu", "info")]
-            ]), user_id)
-            return
-
-        # 🌍 باس جهانی
-        if data == 'world_boss_menu':
-            show_world_boss_menu(chat_id, user_id, message_id)
-            return
-        if data.startswith('boss_attack_'):
-            soldiers = int(data.replace('boss_attack_', ''))
-            result = attack_world_boss(user_id, soldiers)
-            if result['success']:
-                text = f"⚔️ شما {format_number(result['damage'])} آسیب زدید.\n❤️ جان باس: {format_number(result['new_hp'])} / {format_number(result['max_hp'])}"
-            else:
-                text = result['message']
-            edit_or_send(chat_id, message_id, text, build_inline_keyboard([
-                [inline_btn("🏠 بازگشت", "main_menu", "info")]
-            ]), user_id)
-            return
-
-        # 📜 گزارش‌ها
-        if data == 'battle_reports':
-            show_battle_reports(chat_id, user_id, message_id)
-            return
-
-        # 🏆 رتبه‌بندی
-        if data == 'leaderboard':
-            show_leaderboard(chat_id, user_id, message_id)
-            return
-
-        # 💰 جایزه‌بگیر
-        if data == 'bounty_menu':
-            show_bounty_menu(chat_id, user_id, message_id)
-            return
-        if data == 'bounty_place':
-            msg = bot.send_message(chat_id, "نام امپراطوری هدف و مقدار جایزه را بفرستید:\n"
-                                           "مثال: MyEmpire 1000")
-            set_user_state(user_id, 'process_bounty_place')
-            return
-        if data == 'bounty_claim':
-            msg = bot.send_message(chat_id, "شناسه جایزه را ارسال کنید:")
-            set_user_state(user_id, 'process_bounty_claim')
-            return
-
-                # ============================================================
+        # ============================================================
         # پیش‌فرض
         bot.answer_callback_query(call.id)
 
@@ -3157,17 +3109,7 @@ def on_new_chat_members(message):
             except:
                 pass
 
-@bot.message_handler(func=lambda m: m.text == "فعال" and m.chat.type in ['group', 'supergroup'])
-def activate_group(message):
-    if not is_admin_user(message.from_user.id):
-        bot.reply_to(message, "⛔️ فقط ادمین مجاز به فعال‌سازی گروه است.")
-        return
-    exclusive_chat = get_exclusive_chat()
-    if exclusive_chat is not None and exclusive_chat != message.chat.id:
-        bot.reply_to(message, "⚠️ این ربات قبلاً در گروه دیگری فعال شده است.")
-        return
-    set_exclusive_chat(message.chat.id)
-    bot.reply_to(message, "✅ این گروه به عنوان گروه اختصاصی ربات فعال شد.")
+
 
 # ============================================================
 # 🔄 به‌روزرسانی دوره‌ای و نخ پس‌زمینه
