@@ -2369,7 +2369,11 @@ def callback_handler(call: types.CallbackQuery):
 
         # فعال‌سازی عضویت اجباری توسط ادمین
         if data == 'admin_force_join' and is_admin_user(user_id):
-            msg = bot.send_message(chat_id, "📢 آیدی کانال را برای عضویت اجباری وارد کنید (با @ شروع شود).\nبرای لغو عضویت اجباری، کلمه `لغو` را ارسال کنید:")
+            markup = build_inline_keyboard([
+                [inline_btn("🗑 غیرفعال‌سازی و حذف کانال", "admin_remove_force_join", "danger")],
+                [inline_btn("🏠 انصراف", "admin_panel", "primary")]
+            ])
+            msg = bot.send_message(chat_id, "📢 لطفاً آیدی کانال جدید را برای عضویت اجباری ارسال کنید (با @ شروع شود).\nیا برای لغو کانال فعلی، روی دکمه زیر کلیک کنید:", reply_markup=markup)
             set_user_state(user_id, 'process_admin_force_join')
             return
         # بررسی مالکیت دکمه
@@ -2379,6 +2383,14 @@ def callback_handler(call: types.CallbackQuery):
             return
 
         # 👑 پنل مدیریت
+        if data == 'admin_remove_force_join' and is_admin_user(user_id):
+            with get_connection() as conn:
+                conn.execute("DELETE FROM bot_settings WHERE key = 'force_join'")
+            clear_user_state(user_id)
+            markup = build_inline_keyboard([[inline_btn("🔙 بازگشت به پنل", "admin_panel", "primary")]])
+            edit_or_send(chat_id, message_id, "✅ عضویت اجباری با موفقیت لغو و غیرفعال شد.", markup, user_id)
+            return
+
         if data == 'admin_panel' and is_admin_user(user_id):
             edit_or_send(chat_id, message_id, "👑 <b>پنل مدیریت</b>", admin_main_menu(), user_id)
             return
