@@ -2716,11 +2716,11 @@ def callback_handler(call: types.CallbackQuery):
         # پیش‌فرض
         bot.answer_callback_query(call.id)
 
-
     except Exception as e:
-        print(f"Error in callback: {e}")
+        import traceback
+        traceback.print_exc()
         try:
-            bot.answer_callback_query(call.id, "⚠️ خطایی رخ داد. لطفاً دوباره تلاش کنید.")
+            bot.answer_callback_query(call.id, "⚠️ خطایی رخ داد. لطفاً دوباره تلاش کنید.", show_alert=True)
         except:
             pass
 
