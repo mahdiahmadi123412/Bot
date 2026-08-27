@@ -533,13 +533,12 @@ def ensure_production(user_id: int, user: Optional[Dict[str, Any]] = None) -> No
 # ============================================================
 # 🎨 دکمه‌های شیشه‌ای (به‌همراه استایل بصری با ایموجی)
 # ============================================================
-def inline_btn(text: str, callback_data: str, *args, **kwargs) -> InlineKeyboardButton:
-    # Telebot API does not natively support colored styles. We absorb the style argument here and drop it.
-    if 'style' in kwargs:
-        del kwargs['style']
-    if args and len(args) > 0:
-        pass # ignore positional style
-    return InlineKeyboardButton(text=text, callback_data=callback_data, **kwargs)
+def inline_btn(text: str, callback_data: str, style: str = 'primary') -> InlineKeyboardButton:
+    valid_styles = ['primary', 'success', 'danger']
+    if style not in valid_styles:
+        style = 'primary'
+
+    return InlineKeyboardButton(text=text, callback_data=callback_data, style=style)
 
 
 def inline_row(*buttons: InlineKeyboardButton) -> List[InlineKeyboardButton]:
@@ -2253,6 +2252,7 @@ def callback_handler(call: types.CallbackQuery):
         user_id = call.from_user.id
         chat_id = call.message.chat.id
         data = call.data
+        message_id = call.message.message_id if call.message else None
                 # بررسی عضویت اجباری برای کلیک دکمه‌ها
         if not check_user_joined(user_id):
             channel = get_force_join_channel()
@@ -2359,8 +2359,6 @@ def callback_handler(call: types.CallbackQuery):
             msg = bot.send_message(chat_id, "📢 آیدی کانال را برای عضویت اجباری وارد کنید (با @ شروع شود).\nبرای لغو عضویت اجباری، کلمه `لغو` را ارسال کنید:")
             set_user_state(user_id, 'process_admin_force_join')
             return
-        message_id = call.message.message_id
-
         # بررسی مالکیت دکمه
         owner = get_message_owner(chat_id, message_id)
         if owner is not None and owner != user_id:
