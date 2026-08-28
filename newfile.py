@@ -517,11 +517,27 @@ def ensure_production(user_id: int, user: Optional[Dict[str, Any]] = None) -> No
     if intervals <= 0:
         return
     buildings = get_buildings(user_id)
-    coins_add = intervals * (BASE_PRODUCTION_COINS + buildings['treasury_level'] * 10)
-    wood_add = intervals * (BASE_PRODUCTION_WOOD + buildings['sawmill_level'] * 8)
-    stone_add = intervals * (BASE_PRODUCTION_STONE + buildings['quarry_level'] * 7)
-    food_add = intervals * (BASE_PRODUCTION_FOOD + buildings['farm_level'] * 12)
+    coins_add = intervals * (buildings['treasury_level'] * 100)
+    wood_add = intervals * (buildings['sawmill_level'] * 100)
+    stone_add = intervals * (buildings['quarry_level'] * 100)
+    food_add = intervals * (buildings['farm_level'] * 100)
     new_last = last_prod + int(intervals * PRODUCTION_INTERVAL_HOURS * 3600)
+    user_resources = user['coins'] + user['wood'] + user['stone'] + user['food']
+    max_stor = get_max_storage(buildings)
+
+    if user_resources + coins_add + wood_add + stone_add + food_add > max_stor:
+        # Scale down additions proportionally if it exceeds max storage
+        available_space = max_stor - user_resources
+        if available_space <= 0:
+            coins_add, wood_add, stone_add, food_add = 0, 0, 0, 0
+        else:
+            total_add = coins_add + wood_add + stone_add + food_add
+            ratio = available_space / total_add
+            coins_add = int(coins_add * ratio)
+            wood_add = int(wood_add * ratio)
+            stone_add = int(stone_add * ratio)
+            food_add = int(food_add * ratio)
+
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute("""
@@ -638,6 +654,12 @@ def delete_castle(castle_id: int) -> None:
 # ============================================================
 # ⚔️ محاسبات نبرد
 # ============================================================
+def get_max_soldiers(buildings: Dict[str, Any]) -> int:
+    return 250000 + ((buildings.get('barracks_level', 1) - 1) * 1000)
+
+def get_max_storage(buildings: Dict[str, Any]) -> int:
+    return 100000 + ((buildings.get('storage_level', 1) - 1) * 1000)
+
 def calculate_army_power(user_id: int) -> int:
     units = get_army_units(user_id)
     total = 0
@@ -650,7 +672,8 @@ def calculate_army_power(user_id: int) -> int:
 
 def calculate_army_defense(user_id: int) -> int:
     units = get_army_units(user_id)
-    total = 0
+    buildings = get_buildings(user_id)
+    total = buildings['wall_level'] * 10
     for unit_type, data in units.items():
         if unit_type in UNIT_TYPES:
             count = data['count']
@@ -1441,8 +1464,11 @@ def show_army_menu(chat_id: int, user_id: int, message_id: Optional[int] = None)
     user = get_user(user_id)
     if not user:
         return
+    buildings = get_buildings(user_id)
+    max_sold = get_max_soldiers(buildings)
     units = get_army_units(user_id)
     text = f"🏰 <b>ارتش شما</b>\n\n"
+    text += f"🏰 نیروی نظامی: {format_number(user['total_soldiers'])}/{format_number(max_sold)} سرباز\n\n"
     if not units:
         text += "هنوز هیچ واحدی استخدام نکرده‌اید.\n"
     else:
@@ -1771,6 +1797,13 @@ def process_recruit_quantity(message, unit_type):
         return
     
     user = get_user(user_id)
+    buildings = get_buildings(user_id)
+    max_sold = get_max_soldiers(buildings)
+
+    if user['total_soldiers'] + count > max_sold:
+        bot.send_message(message.chat.id, "❌ ظرفیت سربازخانه شما پر است. آن را ارتقا دهید!")
+        return
+
     cost = UNIT_TYPES[unit_type]['cost']
     total_cost = {k: v * count for k, v in cost.items()}
     
@@ -2681,6 +2714,29 @@ def callback_handler(call: types.CallbackQuery):
             show_alliance_list(chat_id, user_id, message_id)
             return
 
+        if data == 'alliance_join_mode':
+            alliance = get_alliance(user_id)
+            if not alliance or alliance['leader_id'] != user_id: return
+            j_mode = alliance.get('join_mode', 'direct')
+            status_text = "مستقیم" if j_mode == 'direct' else "درخواستی"
+            text = f"⚙️ حالت فعلی عضوگیری: [{status_text}]\n\nیکی از حالت‌های زیر را انتخاب کنید:"
+            markup = build_inline_keyboard([
+                [inline_btn("ورود مستقیم", "set_join_mode_direct", "success"), inline_btn("درخواستی", "set_join_mode_request", "warning")],
+                [inline_btn("🏠 بازگشت", "alliance_menu", "primary")]
+            ])
+            edit_or_send(chat_id, message_id, text, markup, user_id)
+            return
+
+        if data.startswith('set_join_mode_'):
+            mode = data.replace('set_join_mode_', '')
+            alliance = get_alliance(user_id)
+            if not alliance or alliance['leader_id'] != user_id: return
+            with get_connection() as conn:
+                conn.execute("UPDATE alliances SET join_mode = ? WHERE id = ?", (mode, alliance['id']))
+            bot.answer_callback_query(call.id, "✅ تنظیمات عضوگیری آپدیت شد.", show_alert=True)
+            show_alliance_menu(chat_id, user_id, message_id)
+            return
+
         if data.startswith('alliance_join_'):
             alliance_id = int(data.replace('alliance_join_', ''))
             with get_connection() as conn:
@@ -2698,12 +2754,66 @@ def callback_handler(call: types.CallbackQuery):
                     bot.answer_callback_query(call.id, "❌ ظرفیت این اتحاد پر شده است!", show_alert=True)
                     return
                 
-                if join_alliance(user_id, alliance_id):
-                    bot.answer_callback_query(call.id, "✅ با موفقیت به اتحاد پیوستی!", show_alert=True)
-                    show_alliance_menu(chat_id, user_id, message_id)
+                j_mode = alliance.get('join_mode', 'direct')
+                if j_mode == 'request':
+                    user = get_user(user_id)
+                    if user.get('alliance_id'):
+                        bot.answer_callback_query(call.id, "❌ شما قبلاً در یک اتحاد عضو شده‌اید.", show_alert=True)
+                        return
+                    bot.answer_callback_query(call.id, "✅ درخواست عضویت شما ارسال شد.", show_alert=True)
+
+                    req_text = f"📥 درخواست عضویت جدید از طرف {user['empire_name']}\nسطح: {user['level']} | تجربه: {format_number(user['exp'])}"
+                    req_markup = build_inline_keyboard([
+                        [inline_btn("✅ قبول", f"acc_req_{user_id}_{alliance_id}", "success"), inline_btn("❌ رد", f"rej_req_{user_id}_{alliance_id}", "danger")]
+                    ])
+                    try: bot.send_message(alliance['leader_id'], req_text, reply_markup=req_markup)
+                    except: pass
                 else:
-                    bot.answer_callback_query(call.id, "❌ شما قبلاً در یک اتحاد عضو شده‌اید.", show_alert=True)
+                    if join_alliance(user_id, alliance_id):
+                        bot.answer_callback_query(call.id, "✅ با موفقیت به اتحاد پیوستی!", show_alert=True)
+                        show_alliance_menu(chat_id, user_id, message_id)
+                    else:
+                        bot.answer_callback_query(call.id, "❌ شما قبلاً در یک اتحاد عضو شده‌اید.", show_alert=True)
                 return
+
+        if data.startswith('acc_req_'):
+            parts = data.split('_')
+            req_uid = int(parts[2])
+            req_aid = int(parts[3])
+
+            alliance = get_alliance(user_id)
+            if not alliance or alliance['leader_id'] != user_id or alliance['id'] != req_aid:
+                bot.answer_callback_query(call.id, "❌ مجاز نیستید.", show_alert=True)
+                return
+
+            req_user = get_user_raw(req_uid)
+            if req_user and not req_user.get('alliance_id'):
+                members = get_alliance_members(req_aid)
+                if len(members) >= alliance.get('capacity', 5):
+                    bot.answer_callback_query(call.id, "❌ ظرفیت این اتحاد پر شده است!", show_alert=True)
+                    return
+
+                if join_alliance(req_uid, req_aid):
+                    bot.edit_message_text(f"✅ درخواست عضویت {req_user['empire_name']} قبول شد.", chat_id=chat_id, message_id=message_id)
+                    try: bot.send_message(req_uid, f"✅ لیدر اتحاد {alliance['name']} درخواست عضویت شما را تایید کرد!")
+                    except: pass
+                else:
+                    bot.answer_callback_query(call.id, "❌ خطایی رخ داد.", show_alert=True)
+            else:
+                bot.edit_message_text("❌ این کاربر هم‌اکنون عضو اتحاد دیگری است.", chat_id=chat_id, message_id=message_id)
+            return
+
+        if data.startswith('rej_req_'):
+            parts = data.split('_')
+            req_uid = int(parts[2])
+            req_aid = int(parts[3])
+            alliance = get_alliance(user_id)
+            if not alliance or alliance['leader_id'] != user_id or alliance['id'] != req_aid:
+                return
+            bot.edit_message_text("❌ درخواست عضویت رد شد.", chat_id=chat_id, message_id=message_id)
+            try: bot.send_message(req_uid, f"❌ لیدر اتحاد {alliance['name']} درخواست شما را رد کرد.")
+            except: pass
+            return
 
         if data == 'alliance_withdraw':
             msg = bot.send_message(chat_id, "📤 نوع منبع و مقدار را برای برداشت ارسال کنید (coins/wood/stone/food):\nمثال: coins 500")
@@ -3112,6 +3222,16 @@ def recruit_unit(chat_id: int, user_id: int, unit_type: str, message_id: int):
     user = get_user(user_id)
     if not user:
         return
+
+    buildings = get_buildings(user_id)
+    max_sold = get_max_soldiers(buildings)
+    if user['total_soldiers'] + 1 > max_sold:
+        text = "❌ ظرفیت سربازخانه شما پر است. آن را ارتقا دهید!"
+        edit_or_send(chat_id, message_id, text, build_inline_keyboard([
+            [inline_btn("🏠 بازگشت", "main_menu", "info")]
+        ]), user_id)
+        return
+
     cost = UNIT_TYPES[unit_type]['cost']
     if (user['coins'] < cost['coins'] or user['wood'] < cost['wood'] or
         user['stone'] < cost['stone'] or user['food'] < cost['food']):
