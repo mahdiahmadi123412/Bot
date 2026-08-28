@@ -1,3 +1,4 @@
+import re
 import json
 import time
 import random
@@ -1259,6 +1260,9 @@ def process_empire_name(message):
     if not name:
         bot.send_message(message.chat.id, "❌ نام نمی‌تواند خالی باشد. دوباره تلاش کن:")
         set_user_state(user_id, 'process_empire_name')
+        return
+    if not re.match(r"^[A-Za-z]{3,12}$", name):
+        bot.send_message(message.chat.id, "❌ نام باید فقط شامل حروف انگلیسی باشد و بین ۳ تا ۱۲ کاراکتر طول داشته باشد (بدون عدد یا فاصله).")
         return
     # بررسی یکتا بودن
     existing = get_user_by_empire_name(name)
@@ -2629,6 +2633,7 @@ def callback_handler(call: types.CallbackQuery):
                 if not alliance:
                     bot.answer_callback_query(call.id, "❌ این اتحاد یافت نشد.", show_alert=True)
                     return
+                alliance = dict(alliance)
                 
                 members = get_alliance_members(alliance_id)
                 if len(members) >= alliance.get('capacity', 5):
@@ -2699,6 +2704,29 @@ def callback_handler(call: types.CallbackQuery):
                 set_user_state(user_id, 'process_alliance_war')
             else:
                 bot.answer_callback_query(call.id, "فقط لیدر می‌تواند اعلان جنگ کند.", show_alert=True)
+            return
+
+
+        if data.startswith('alliance_transfer_'):
+            parts = data.split('_')
+            target_user_id = int(parts[2])
+            alliance_id = int(parts[3])
+            alliance = get_alliance(user_id)
+            if not alliance or alliance['leader_id'] != user_id or alliance['id'] != alliance_id:
+                bot.answer_callback_query(call.id, "❌ شما مجاز به این کار نیستید.", show_alert=True)
+                return
+
+            with get_connection() as conn:
+                # current leader becomes member
+                conn.execute("UPDATE alliance_members SET role = 'member' WHERE user_id = ?", (user_id,))
+                # new target becomes leader
+                conn.execute("UPDATE alliance_members SET role = 'leader' WHERE user_id = ?", (target_user_id,))
+                # update alliance master table
+                conn.execute("UPDATE alliances SET leader_id = ? WHERE id = ?", (target_user_id, alliance_id))
+
+            bot.answer_callback_query(call.id, "✅ مالکیت اتحاد با موفقیت منتقل شد.", show_alert=True)
+            bot.edit_message_text("✅ مالکیت انتقال یافت.", chat_id=chat_id, message_id=message_id)
+            show_alliance_menu(chat_id, user_id, message_id)
             return
 
         if data == 'alliance_roles':
@@ -3394,6 +3422,10 @@ def process_market_buy(message):
 def process_alliance_create(message):
     name = message.text.strip()
     user_id = message.from_user.id
+    if not re.match(r"^[A-Za-z]{3,12}$", name):
+        bot.send_message(message.chat.id, "❌ نام باید فقط شامل حروف انگلیسی باشد و بین ۳ تا ۱۲ کاراکتر طول داشته باشد (بدون عدد یا فاصله).")
+        return
+
     user = get_user(user_id)
     
     if user['coins'] < 10000:
