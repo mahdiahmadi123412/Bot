@@ -2387,18 +2387,23 @@ def callback_handler(call: types.CallbackQuery):
             return
         if data.startswith('bounty_cancel_'):
             b_id = int(data.replace('bounty_cancel_', ''))
+
+            bounty_to_process = None
             with get_connection() as conn:
                 cur = conn.cursor()
                 cur.execute("SELECT * FROM bounties WHERE id = ? AND issuer_id = ? AND active = 1", (b_id, user_id))
                 bounty = cur.fetchone()
                 if bounty:
-                    bounty = dict(bounty)
+                    bounty_to_process = dict(bounty)
                     conn.execute("UPDATE bounties SET active = 0 WHERE id = ?", (b_id,))
-                    user = get_user_raw(user_id)
-                    update_user(user_id, coins=user['coins'] + bounty['amount_coins'])
-                    bot.answer_callback_query(call.id, "✅ جایزه شما لغو شد و سکه‌ها به حسابتان بازگشت.", show_alert=True)
-                else:
-                    bot.answer_callback_query(call.id, "❌ جایزه یافت نشد یا قبلاً انجام/لغو شده است.", show_alert=True)
+
+            if bounty_to_process:
+                user = get_user_raw(user_id)
+                update_user(user_id, coins=user['coins'] + bounty_to_process['amount_coins'])
+                bot.answer_callback_query(call.id, "✅ جایزه شما لغو شد و سکه‌ها به حسابتان بازگشت.", show_alert=True)
+            else:
+                bot.answer_callback_query(call.id, "❌ جایزه یافت نشد یا قبلاً انجام/لغو شده است.", show_alert=True)
+
             call.data = 'bounty_manage'
             callback_handler(call)
             return
@@ -2630,23 +2635,24 @@ def callback_handler(call: types.CallbackQuery):
 
         if data.startswith('market_cancel_'):
             offer_id = int(data.replace('market_cancel_', ''))
+
+            offer_to_process = None
             with get_connection() as conn:
                 cur = conn.cursor()
                 cur.execute("SELECT * FROM market_offers WHERE id = ? AND seller_id = ? AND active = 1", (offer_id, user_id))
                 offer = cur.fetchone()
-
                 if offer:
-                    offer = dict(offer)
+                    offer_to_process = dict(offer)
                     conn.execute("UPDATE market_offers SET active = 0 WHERE id = ?", (offer_id,))
-                    if offer['item_type'] != 'alliance':
-                        user = get_user_raw(user_id)
-                        update_user(user_id, **{offer['item_type']: user[offer['item_type']] + offer['quantity']})
 
-                    bot.answer_callback_query(call.id, "✅ آفر شما لغو شد و منابع/اتحاد بازگردانده شد.", show_alert=True)
-                else:
-                    bot.answer_callback_query(call.id, "❌ آفر یافت نشد یا از قبل لغو شده است.", show_alert=True)
+            if offer_to_process:
+                if offer_to_process['item_type'] != 'alliance':
+                    user = get_user_raw(user_id)
+                    update_user(user_id, **{offer_to_process['item_type']: user[offer_to_process['item_type']] + offer_to_process['quantity']})
+                bot.answer_callback_query(call.id, "✅ آفر شما لغو شد و منابع/اتحاد بازگردانده شد.", show_alert=True)
+            else:
+                bot.answer_callback_query(call.id, "❌ آفر یافت نشد یا از قبل لغو شده است.", show_alert=True)
 
-            # Show market manage again
             call.data = 'market_manage'
             callback_handler(call)
             return
