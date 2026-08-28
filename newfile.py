@@ -2014,38 +2014,26 @@ def execute_alliance_war(att_alliance_id: int, def_alliance_id: int, att_chat_id
         cur.execute("SELECT user_id FROM war_volunteers WHERE alliance_id = ?", (def_alliance_id,))
         def_vols = [r['user_id'] for r in cur.fetchall()]
 
-        # Free war locks
         conn.execute("UPDATE users SET is_in_war = 0 WHERE alliance_id IN (?, ?)", (att_alliance_id, def_alliance_id))
         conn.execute("DELETE FROM war_volunteers WHERE alliance_id IN (?, ?)", (att_alliance_id, def_alliance_id))
 
     att_total_attack = 0
     att_total_defense = 0
-    att_users = []
-
     for uid in att_vols:
         u = get_user_raw(uid)
         if u:
             att_total_attack += u['attack_power']
             att_total_defense += u['defense_power']
-            att_users.append(u)
 
     def_total_attack = 0
     def_total_defense = 0
-    def_users = []
-
     for uid in def_vols:
         u = get_user_raw(uid)
         if u:
             def_total_attack += u['attack_power']
             def_total_defense += u['defense_power']
-            def_users.append(u)
 
-    report = "⚔️ <b>گزارش نبرد مجموع (Total War)</b>\n\n"
-    report += f"⚔️ قدرت حمله مهاجمین: {format_number(att_total_attack)}\n"
-    report += f"🛡 قدرت دفاع مدافعین: {format_number(def_total_defense)}\n"
-    report += "\n━━━━━━━━━━━━━━━━\n"
-
-    # Evaluate Winner
+    # تفاضل قدرت‌ها
     att_score = att_total_attack - def_total_defense
     def_score = def_total_attack - att_total_defense
 
@@ -2055,46 +2043,67 @@ def execute_alliance_war(att_alliance_id: int, def_alliance_id: int, att_chat_id
     elif def_score > att_score:
         winner_is_att = False
 
-    if winner_is_att is True:
-        report += "🎉 <b>اتحاد مهاجم پیروز شد!</b>\n"
+    report = "⚔️ <b>گزارش نبرد قبیله‌ای (Clan War)</b>\n\n"
+    report += f"⚔️ قدرت حمله مهاجمین: {format_number(att_total_attack)}\n"
+    report += f"🛡 قدرت دفاع مدافعین: {format_number(def_total_defense)}\n"
+    report += "━━━━━━━━━━━━━━━━\n"
+
+    # تعیین درصد تلفات
+    att_loss_pct = 0.15 if winner_is_att else 0.35
+    def_loss_pct = 0.35 if winner_is_att else 0.15
+    if winner_is_att is None:
+        att_loss_pct = 0.25
+        def_loss_pct = 0.25
+
+    # اعمال تلفات
+    for uid in att_vols:
+        u_units = get_army_units(uid)
+        for utype, udata in u_units.items():
+            loss = int(udata['count'] * att_loss_pct)
+            if loss > 0: update_army_unit(uid, utype, count_delta=-loss)
+        update_army_power_fields(uid)
+
+    for uid in def_vols:
+        u_units = get_army_units(uid)
+        for utype, udata in u_units.items():
+            loss = int(udata['count'] * def_loss_pct)
+            if loss > 0: update_army_unit(uid, utype, count_delta=-loss)
+        update_army_power_fields(uid)
+
+    report += f"💀 تلفات مهاجمین: {int(att_loss_pct*100)}٪ از کل ارتش\n"
+    report += f"💀 تلفات مدافعین: {int(def_loss_pct*100)}٪ از کل ارتش\n"
+    report += "━━━━━━━━━━━━━━━━\n"
+
+    if winner_is_att is not None:
+        win_id = att_alliance_id if winner_is_att else def_alliance_id
+        lose_id = def_alliance_id if winner_is_att else att_alliance_id
+
         with get_connection() as conn:
-            conn.execute("UPDATE alliances SET level = level + 1 WHERE id = ?", (att_alliance_id,))
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM alliances WHERE id = ?", (lose_id,))
+            lose_al = cur.fetchone()
+            cur.execute("SELECT * FROM alliances WHERE id = ?", (win_id,))
+            win_al = cur.fetchone()
 
-        # Distribute loot (basic algorithm: winner takes 10% of losers coins distributed proportionally)
-        total_loot = sum([int(u['coins'] * 0.1) for u in def_users])
-        for du in def_users:
-            update_user(du['user_id'], coins=int(du['coins']*0.9))
+            if lose_al and win_al:
+                loot_coins = int(lose_al['treasury_coins'] * 0.3)
+                loot_wood = int(lose_al['treasury_wood'] * 0.3)
+                loot_stone = int(lose_al['treasury_stone'] * 0.3)
+                loot_food = int(lose_al['treasury_food'] * 0.3)
 
-        for au in att_users:
-            add_exp(au['user_id'], 500, au['user_id'])
-            if att_total_attack > 0:
-                share = au['attack_power'] / att_total_attack
-                my_loot = int(total_loot * share)
-                update_user(au['user_id'], coins=au['coins'] + my_loot)
+                cur.execute("UPDATE alliances SET treasury_coins = treasury_coins - ?, treasury_wood = treasury_wood - ?, treasury_stone = treasury_stone - ?, treasury_food = treasury_food - ? WHERE id = ?", (loot_coins, loot_wood, loot_stone, loot_food, lose_id))
+                cur.execute("UPDATE alliances SET treasury_coins = treasury_coins + ?, treasury_wood = treasury_wood + ?, treasury_stone = treasury_stone + ?, treasury_food = treasury_food + ?, level = level + 1 WHERE id = ?", (loot_coins, loot_wood, loot_stone, loot_food, win_id))
 
-    elif winner_is_att is False:
-        report += "🛡 <b>اتحاد مدافع با موفقیت دفاع کرد!</b>\n"
-        with get_connection() as conn:
-            conn.execute("UPDATE alliances SET level = level + 1 WHERE id = ?", (def_alliance_id,))
-
-        total_loot = sum([int(u['coins'] * 0.1) for u in att_users])
-        for au in att_users:
-            update_user(au['user_id'], coins=int(au['coins']*0.9))
-
-        for du in def_users:
-            add_exp(du['user_id'], 500, du['user_id'])
-            if def_total_defense > 0:
-                share = du['defense_power'] / def_total_defense
-                my_loot = int(total_loot * share)
-                update_user(du['user_id'], coins=du['coins'] + my_loot)
+                win_name = win_al['name']
+                report += f"🎉 <b>اتحاد {win_name} پیروز شد!</b>\n\n"
+                report += f"💰 غنائم غارت شده از خزانه دشمن:\n"
+                report += f"سکه: {format_number(loot_coins)} | چوب: {format_number(loot_wood)} | سنگ: {format_number(loot_stone)} | غذا: {format_number(loot_food)}\n"
     else:
         report += "🤝 <b>نبرد مساوی شد! (بدون غنیمت)</b>\n"
 
-    # Broadcast report
     for uid in att_vols + def_vols:
         try: bot.send_message(uid, report)
         except: pass
-
 
 def show_leaderboard(chat_id: int, user_id: int, message_id: Optional[int] = None):
     with get_connection() as conn:
@@ -3002,9 +3011,8 @@ def callback_handler(call: types.CallbackQuery):
 
             region_data = TERRITORY_REGIONS[region_id]
             user_power = calculate_army_power(user_id)
-            win_chance = user_power / max(1, user_power + region_data['defense'])
             
-            if random.random() < win_chance:
+            if user_power >= region_data['defense']:
                 territory = json.loads(alliance.get('territory', '{}'))
                 r_name = region_data['name']
                 
@@ -3046,7 +3054,7 @@ def callback_handler(call: types.CallbackQuery):
                     loss = int(u_data['count'] * 0.30)
                     if loss > 0: update_army_unit(user_id, unit_type, count_delta=-loss)
                 update_army_power_fields(user_id)
-                text = f"❌ <b>شکست سخت!</b>\n\nمحافظان <b>{region_data['name']}</b> بسیار قدرتمند بودند. ۳۰٪ از ارتش شما در این نبرد از بین رفت."
+                text = f"❌ <b>شکست سخت!</b>\n\nقدرت شما ({format_number(user_power)}) از محافظان ({format_number(region_data['defense'])}) کمتر بود. ۳۰٪ از ارتش شما از بین رفت."
                 
             edit_or_send(chat_id, message_id, text, build_inline_keyboard([[inline_btn("🏠 بازگشت به اتحاد", "alliance_menu")]]), user_id)
             return
