@@ -1337,9 +1337,9 @@ def process_empire_name(message):
     buildings = get_buildings(user_id)
     text = (
         f"🏰 <b>امپراطوری {user['empire_name']} با موفقیت ساخته شد!</b>\n\n"
-        f"📦 وضعیت انبار: {{format_number(user['coins'] + user['wood'] + user['stone'] + user['food'])}}/{{format_number(get_max_storage(buildings))}}\n"
+        f"📦 وضعیت انبار: {format_number(user['coins'] + user['wood'] + user['stone'] + user['food'])}/{format_number(get_max_storage(buildings))}\n"
         f"سکه: {format_number(user['coins'])} | چوب: {format_number(user['wood'])} | سنگ: {format_number(user['stone'])} | غذا: {format_number(user['food'])}\n"
-        f"نیروی نظامی: {{format_number(user['total_soldiers'])}}/{{format_number(get_max_soldiers(buildings))}} سرباز\n"
+        f"نیروی نظامی: {format_number(user['total_soldiers'])}/{format_number(get_max_soldiers(buildings))} سرباز\n"
         f"از منوی زیر امپراتوری خودت را مدیریت کن 👇"
     )
     try:
@@ -1410,13 +1410,13 @@ def show_profile(chat_id: int, user_id: int, message_id: Optional[int] = None):
         f"🏆 سطح: {user['level']} | تجربه: {format_number(user['exp'])}\n"
         f"👥 اتحاد: {alliance_name}\n"
         f"━━━━━━━━━━━━━━━━\n"
-        f"📦 وضعیت انبار: {{format_number(user['coins'] + user['wood'] + user['stone'] + user['food'])}}/{{format_number(get_max_storage(buildings))}}\n"
+        f"📦 وضعیت انبار: {format_number(user['coins'] + user['wood'] + user['stone'] + user['food'])}/{format_number(get_max_storage(buildings))}\n"
         f"💰 سکه: {format_number(user['coins'])}\n"
         f"🪵 چوب: {format_number(user['wood'])}\n"
         f"🪨 سنگ: {format_number(user['stone'])}\n"
         f"🍖 غذا: {format_number(user['food'])}\n"
         f"━━━━━━━━━━━━━━━━\n"
-        f"⚔️ سربازان کل: {{format_number(user['total_soldiers'])}}/{{format_number(get_max_soldiers(buildings))}}\n"
+        f"⚔️ سربازان کل: {format_number(user['total_soldiers'])}/{format_number(get_max_soldiers(buildings))}\n"
         f"🗡️ قدرت حمله: {format_number(user['attack_power'])}\n"
         f"🛡️ قدرت دفاع: {format_number(user['defense_power'])}\n"
         f"━━━━━━━━━━━━━━━━\n"
@@ -1445,19 +1445,20 @@ def show_resources(chat_id: int, user_id: int, message_id: Optional[int] = None)
     user = get_user(user_id)
     if not user:
         return
+    buildings = get_buildings(user_id)
     text = (
         f"🏭 <b>منابع فعلی</b>\n"
-        f"📦 وضعیت انبار: {{format_number(user['coins'] + user['wood'] + user['stone'] + user['food'])}}/{{format_number(get_max_storage(get_buildings(user_id)))}}\n"
+        f"📦 وضعیت انبار: {format_number(user['coins'] + user['wood'] + user['stone'] + user['food'])}/{format_number(get_max_storage(buildings))}\n"
         f"💰 سکه: {format_number(user['coins'])}\n"
         f"🪵 چوب: {format_number(user['wood'])}\n"
         f"🪨 سنگ: {format_number(user['stone'])}\n"
         f"🍖 غذا: {format_number(user['food'])}\n"
         f"━━━━━━━━━━━━━━━━\n"
         f"تولید خودکار هر ساعت:\n"
-        f"💰 سکه: {{get_buildings(user_id)['treasury_level'] * 100}}\n"
-        f"🪵 چوب: {{get_buildings(user_id)['sawmill_level'] * 100}}\n"
-        f"🪨 سنگ: {{get_buildings(user_id)['quarry_level'] * 100}}\n"
-        f"🍖 غذا: {{get_buildings(user_id)['farm_level'] * 100}}\n"
+        f"💰 سکه: {buildings['treasury_level'] * 100}\n"
+        f"🪵 چوب: {buildings['sawmill_level'] * 100}\n"
+        f"🪨 سنگ: {buildings['quarry_level'] * 100}\n"
+        f"🍖 غذا: {buildings['farm_level'] * 100}\n"
     )
     markup = build_inline_keyboard([
         [inline_btn("🔄 به‌روزرسانی", "collect_resources", "primary")],
@@ -1641,6 +1642,7 @@ def show_alliance_menu(chat_id: int, user_id: int, message_id: Optional[int] = N
         ]
         if alliance['leader_id'] == user_id:
             rows.append([inline_btn("⚙️ تنظیم نقش اعضا", "alliance_roles", "warning"), inline_btn("⬆️ افزایش ظرفیت (2000 سکه)", "alliance_upgrade_capacity", "success")])
+            rows.append([inline_btn("⚙️ تنظیمات عضوگیری", "alliance_join_mode", "warning")])
             rows.append([inline_btn("👢 اخراج عضو", "alliance_kick", "danger"), inline_btn("🛒 فروش اتحاد", "alliance_sell", "success")])
             rows.append([inline_btn("⚔️ جنگ قبیله‌ای", "alliance_war_prompt", "danger"), inline_btn("🕊 درخواست صلح", "alliance_peace_prompt", "success")])
             rows.append([inline_btn("💔 شکستن پیمان صلح", "alliance_break_peace", "danger")])
