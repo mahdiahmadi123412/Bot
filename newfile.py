@@ -215,6 +215,7 @@ def init_db() -> None:
         # ======= این دو خط باید دقیقاً اینجا قرار بگیرن =======
         add_column_if_not_exists(conn, 'alliances', 'capacity', 'INTEGER DEFAULT 5')
         add_column_if_not_exists(conn, 'alliances', 'captures', 'INTEGER DEFAULT 0')
+        add_column_if_not_exists(conn, 'alliances', 'join_mode', "TEXT DEFAULT 'direct'")
         # ===================================================
 
         cur.execute("""
@@ -1333,10 +1334,12 @@ def process_empire_name(message):
     # ذخیره نام
     update_user(user_id, empire_name=name)
     user = get_user(user_id)
+    buildings = get_buildings(user_id)
     text = (
         f"🏰 <b>امپراطوری {user['empire_name']} با موفقیت ساخته شد!</b>\n\n"
+        f"📦 وضعیت انبار: {{format_number(user['coins'] + user['wood'] + user['stone'] + user['food'])}}/{{format_number(get_max_storage(buildings))}}\n"
         f"سکه: {format_number(user['coins'])} | چوب: {format_number(user['wood'])} | سنگ: {format_number(user['stone'])} | غذا: {format_number(user['food'])}\n"
-        f"نیروی اولیه: {format_number(user['total_soldiers'])} سرباز\n"
+        f"نیروی نظامی: {{format_number(user['total_soldiers'])}}/{{format_number(get_max_soldiers(buildings))}} سرباز\n"
         f"از منوی زیر امپراتوری خودت را مدیریت کن 👇"
     )
     try:
@@ -1407,12 +1410,13 @@ def show_profile(chat_id: int, user_id: int, message_id: Optional[int] = None):
         f"🏆 سطح: {user['level']} | تجربه: {format_number(user['exp'])}\n"
         f"👥 اتحاد: {alliance_name}\n"
         f"━━━━━━━━━━━━━━━━\n"
+        f"📦 وضعیت انبار: {{format_number(user['coins'] + user['wood'] + user['stone'] + user['food'])}}/{{format_number(get_max_storage(buildings))}}\n"
         f"💰 سکه: {format_number(user['coins'])}\n"
         f"🪵 چوب: {format_number(user['wood'])}\n"
         f"🪨 سنگ: {format_number(user['stone'])}\n"
         f"🍖 غذا: {format_number(user['food'])}\n"
         f"━━━━━━━━━━━━━━━━\n"
-        f"⚔️ سربازان کل: {format_number(user['total_soldiers'])}\n"
+        f"⚔️ سربازان کل: {{format_number(user['total_soldiers'])}}/{{format_number(get_max_soldiers(buildings))}}\n"
         f"🗡️ قدرت حمله: {format_number(user['attack_power'])}\n"
         f"🛡️ قدرت دفاع: {format_number(user['defense_power'])}\n"
         f"━━━━━━━━━━━━━━━━\n"
@@ -1443,16 +1447,17 @@ def show_resources(chat_id: int, user_id: int, message_id: Optional[int] = None)
         return
     text = (
         f"🏭 <b>منابع فعلی</b>\n"
+        f"📦 وضعیت انبار: {{format_number(user['coins'] + user['wood'] + user['stone'] + user['food'])}}/{{format_number(get_max_storage(get_buildings(user_id)))}}\n"
         f"💰 سکه: {format_number(user['coins'])}\n"
         f"🪵 چوب: {format_number(user['wood'])}\n"
         f"🪨 سنگ: {format_number(user['stone'])}\n"
         f"🍖 غذا: {format_number(user['food'])}\n"
         f"━━━━━━━━━━━━━━━━\n"
         f"تولید خودکار هر ساعت:\n"
-        f"💰 سکه: {BASE_PRODUCTION_COINS + get_buildings(user_id)['treasury_level'] * 10}\n"
-        f"🪵 چوب: {BASE_PRODUCTION_WOOD + get_buildings(user_id)['sawmill_level'] * 8}\n"
-        f"🪨 سنگ: {BASE_PRODUCTION_STONE + get_buildings(user_id)['quarry_level'] * 7}\n"
-        f"🍖 غذا: {BASE_PRODUCTION_FOOD + get_buildings(user_id)['farm_level'] * 12}\n"
+        f"💰 سکه: {{get_buildings(user_id)['treasury_level'] * 100}}\n"
+        f"🪵 چوب: {{get_buildings(user_id)['sawmill_level'] * 100}}\n"
+        f"🪨 سنگ: {{get_buildings(user_id)['quarry_level'] * 100}}\n"
+        f"🍖 غذا: {{get_buildings(user_id)['farm_level'] * 100}}\n"
     )
     markup = build_inline_keyboard([
         [inline_btn("🔄 به‌روزرسانی", "collect_resources", "primary")],
