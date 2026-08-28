@@ -1132,33 +1132,49 @@ def main_menu(user_id: int) -> InlineKeyboardMarkup:
 # -----------------------------------------------
 # توابع سیستم عضویت اجباری
 # -----------------------------------------------
-def set_force_join_channel(channel_id: str) -> None:
-    with get_connection() as conn:
-        conn.execute("INSERT OR REPLACE INTO bot_settings (key, value) VALUES ('force_join', ?)", (channel_id,))
-
-def get_force_join_channel() -> Optional[str]:
+def get_force_join_channels() -> List[str]:
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute("SELECT value FROM bot_settings WHERE key = 'force_join'")
         row = cur.fetchone()
-        return row['value'] if row else None
+        if row and row['value']:
+            try:
+                import json
+                return json.loads(row['value'])
+            except:
+                return [row['value']] # پشتیبانی از دیتای قدیمی
+        return []
 
-def check_user_joined(user_id: int) -> bool:
-    """بررسی می‌کند آیا کاربر در کانال اجباری عضو هست یا نه (ادمین‌ها معاف هستند)"""
-    # استثنا کردن ادمین‌ها
+def get_unjoined_channels(user_id: int) -> List[str]:
+    """بررسی می‌کند کاربر در کدام کانال‌ها عضو نیست (ادمین‌ها معاف هستند)"""
     if is_admin_user(user_id):
+        return []
+
+    channels = get_force_join_channels()
+    unjoined = []
+    for ch in channels:
+        try:
+            member = bot.get_chat_member(ch, user_id)
+            if member.status not in ['member', 'administrator', 'creator']:
+                unjoined.append(ch)
+        except Exception:
+            pass # در صورت قطعی یا ادمین نبودن ربات در کانال
+    return unjoined
+
+def check_and_prompt_join(chat_id: int, user_id: int, is_callback=False, call_id=None) -> bool:
+    """اگر کاربر در کانال‌ها عضو نبود پیام می‌دهد و False برمی‌گرداند."""
+    unjoined = get_unjoined_channels(user_id)
+    if not unjoined:
         return True
 
-    channel = get_force_join_channel()
-    if not channel:
-        return True # اگر کانالی ثبت نشده بود، همه مجازند
-    try:
-        member = bot.get_chat_member(channel, user_id)
-        if member.status in ['member', 'administrator', 'creator']:
-            return True
-    except Exception as e:
-        # اگر ربات تو کانال ادمین نباشه خطا میده.
-        pass
+    channels_str = "\n".join(unjoined)
+    msg_text = f"🛑 <b>کاربر عزیز!</b>\nبرای استفاده از ربات باید حتماً در کانال‌های زیر عضو شوید:\n\n{channels_str}\n\nسپس دوباره تلاش کنید."
+
+    if is_callback and call_id:
+        try: bot.answer_callback_query(call_id, "🛑 لطفاً ابتدا در کانال‌های مشخص شده عضو شوید!", show_alert=True)
+        except: pass
+
+    bot.send_message(chat_id, msg_text)
     return False
 
 # -----------------------------------------------
@@ -1194,19 +1210,38 @@ def process_admin_force_join(message):
     if not is_admin_user(user_id): return
     text = message.text.strip()
     
-    if text == 'لغو':
+    channels = get_force_join_channels()
+
+    import json
+    if text == 'لغو همه':
         with get_connection() as conn:
             conn.execute("DELETE FROM bot_settings WHERE key = 'force_join'")
-            bot.send_message(message.chat.id, "✅ عضویت اجباری با موفقیت لغو و غیرفعال شد.")
-            return
+        bot.send_message(message.chat.id, "✅ تمام کانال‌های عضویت اجباری پاک و سیستم غیرفعال شد.")
+        return
+
+    if text.startswith('لغو @'):
+        ch_to_remove = text.replace('لغو ', '').strip()
+        if ch_to_remove in channels:
+            channels.remove(ch_to_remove)
+            with get_connection() as conn:
+                conn.execute("INSERT OR REPLACE INTO bot_settings (key, value) VALUES ('force_join', ?)", (json.dumps(channels),))
+            bot.send_message(message.chat.id, f"✅ کانال {ch_to_remove} از لیست اجباری حذف شد.")
+        else:
+            bot.send_message(message.chat.id, "❌ این کانال در لیست وجود ندارد.")
+        return
         
     if not text.startswith('@'):
         bot.send_message(message.chat.id, "❌ آیدی کانال حتماً باید با @ شروع شود (مثلاً @MyChannel). دوباره تلاش کن:")
         set_user_state(user_id, 'process_admin_force_join')
         return
         
-    set_force_join_channel(text)
-    bot.send_message(message.chat.id, f"✅ کانال {text} به عنوان عضویت اجباری ثبت شد.\n⚠️ فراموش نکن که ربات حتماً باید در این کانال **ادمین** باشه تا بتونه اعضا رو تشخیص بده!")
+    if text not in channels:
+        channels.append(text)
+        with get_connection() as conn:
+            conn.execute("INSERT OR REPLACE INTO bot_settings (key, value) VALUES ('force_join', ?)", (json.dumps(channels),))
+        bot.send_message(message.chat.id, f"✅ کانال {text} به لیست عضویت اجباری اضافه شد.\nلیست فعلی:\n" + "\n".join(channels))
+    else:
+        bot.send_message(message.chat.id, "⚠️ این کانال از قبل در لیست وجود دارد.")
 
 def clear_user_state(user_id: int):
     update_user(user_id, current_action=None, action_data=None)
@@ -1225,9 +1260,7 @@ def start_command(message):
     clear_user_state(user_id)
 
     
-    if not check_user_joined(user_id):
-        channel = get_force_join_channel()
-        bot.send_message(message.chat.id, f"🛑 کاربر عزیز!\nبرای استفاده از ربات باید حتماً در کانال زیر عضو شوید:\n{channel}\n\nسپس دوباره /start را بفرستید.")
+    if not check_and_prompt_join(message.chat.id, user_id):
         return
         
     user = get_user_raw(user_id)
@@ -2167,7 +2200,7 @@ def activate_group(message):
 @bot.message_handler(func=lambda m: m.text.strip().lower() == "راهنما")
 def game_guide(message):
     text = "📖 <b>راهنمای بازی امپراطوری</b>\n\n"
-    text += "🏰 <b>ارتش و نبرد:</b>\nشما می‌توانید با استفاده از منابع خود، واحدهای مختلفی استخدام کنید. ارتش شما برای حمله به باس جهانی، تسخیر قلعه‌ها و نبردهای PvP استفاده می‌شود. تاکتیک‌ها کلید پیروزی هستند.\n\n"
+    text += "🏰 <b>ارتش و نبرد:</b>\nشما می‌توانید با استفاده از منابع خود، واحدهای مختلفی استخدام کنید. ارتش شما برای حمله به باس جهانی، تسخیر قلعه‌ها و نبردهای PvP استفاده می‌شود.\n\n"
     text += "👥 <b>اتحاد:</b>\nبا ساخت یا عضویت در اتحاد، می‌توانید در جنگ‌های قبیله‌ای (Clan Wars) شرکت کنید، از خزانه اشتراکی استفاده کرده و به کمک هم مناطق روی نقشه را تسخیر کنید.\n\n"
     text += "🛒 <b>بازار:</b>\nدر بازار می‌توانید منابع یا حتی اتحاد خود را به فروش بگذارید و منابع مورد نیازتان را بخرید.\n\n"
     text += "💰 <b>جایزه‌بگیر (Bounty):</b>\nمی‌توانید روی سر بازیکنان قوی جایزه بگذارید، و یا با شکست دادن آن‌ها جایزه‌ها را تصاحب کنید.\n\n"
@@ -2283,10 +2316,7 @@ def callback_handler(call: types.CallbackQuery):
         data = call.data
         message_id = call.message.message_id if call.message else None
                 # بررسی عضویت اجباری برای کلیک دکمه‌ها
-        if not check_user_joined(user_id):
-            channel = get_force_join_channel()
-            bot.answer_callback_query(call.id, "🛑 لطفاً ابتدا در کانال عضو شوید!", show_alert=True)
-            bot.send_message(chat_id, f"🛑 برای استفاده از دکمه‌های ربات، باید در کانال زیر عضو شوید:\n{channel}")
+        if not check_and_prompt_join(chat_id, user_id, is_callback=True, call_id=call.id):
             return
 
         # تغییر نام امپراطوری
@@ -2386,10 +2416,10 @@ def callback_handler(call: types.CallbackQuery):
         # فعال‌سازی عضویت اجباری توسط ادمین
         if data == 'admin_force_join' and is_admin_user(user_id):
             markup = build_inline_keyboard([
-                [inline_btn("🗑 غیرفعال‌سازی و حذف کانال", "admin_remove_force_join", "danger")],
+                [inline_btn("🗑 غیرفعال‌سازی کل کانال‌ها", "admin_remove_force_join", "danger")],
                 [inline_btn("🏠 انصراف", "admin_panel", "primary")]
             ])
-            msg = bot.send_message(chat_id, "📢 لطفاً آیدی کانال جدید را برای عضویت اجباری ارسال کنید (با @ شروع شود).\nیا برای لغو کانال فعلی، روی دکمه زیر کلیک کنید:", reply_markup=markup)
+            msg = bot.send_message(chat_id, "📢 آیدی کانال را برای افزودن به لیست بفرستید (مثال: @Tyson)\nبرای حذف یک کانال از لیست بنویسید: `لغو @Tyson`\nبرای لغو کامل، روی دکمه زیر کلیک کنید:", reply_markup=markup, parse_mode='Markdown')
             set_user_state(user_id, 'process_admin_force_join')
             return
         # بررسی مالکیت دکمه
