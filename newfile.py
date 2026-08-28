@@ -1792,6 +1792,10 @@ def process_recruit_quantity(message, unit_type):
 def process_alliance_withdraw(message):
     try:
         parts = message.text.split()
+        if len(parts) != 2:
+            bot.send_message(message.chat.id, "❌ فرمت صحیح: منبع مقدار\nمثال: coins 500")
+            return
+
         resource = parts[0].lower()
         amount = int(parts[1])
         user_id = message.from_user.id
@@ -1801,21 +1805,27 @@ def process_alliance_withdraw(message):
             return
 
         alliance = get_alliance(user_id)
-        if not alliance or resource not in ['coins', 'wood', 'stone', 'food']: return
+        if not alliance or resource not in ['coins', 'wood', 'stone', 'food']:
+            bot.send_message(message.chat.id, "❌ منبع نامعتبر است یا در اتحادی عضو نیستید.")
+            return
         
         treasury_field = f"treasury_{resource}"
         if alliance[treasury_field] < amount:
             bot.send_message(message.chat.id, "❌ خزانه اتحاد این مقدار منبع را ندارد.")
             return
         
+        # ۱. کسر از خزانه در یک تراکنش مستقل
         with get_connection() as conn:
             conn.execute(f"UPDATE alliances SET {treasury_field} = {treasury_field} - ? WHERE id = ?", (amount, alliance['id']))
         
-            user = get_user(user_id)
+        # ۲. آپدیت کردن منابع کاربر بیرون از بلاک بالا برای جلوگیری از Deadlock
+        user = get_user(user_id)
+        if user:
             update_user(user_id, **{resource: user[resource] + amount})
             bot.send_message(message.chat.id, f"✅ مقدار {format_number(amount)} {resource} از خزانه برداشت شد.", reply_markup=main_menu(user_id))
-    except:
-        bot.send_message(message.chat.id, "❌ فرمت نامعتبر است.")
+
+    except (ValueError, IndexError):
+        bot.send_message(message.chat.id, "❌ فرمت نامعتبر است. لطفاً دقیقاً مثل مثال وارد کنید.")
 
 def process_alliance_chat(message):
     user_id = message.from_user.id
