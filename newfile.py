@@ -2046,10 +2046,13 @@ def execute_alliance_war(att_alliance_id: int, def_alliance_id: int, att_chat_id
     report += "\n━━━━━━━━━━━━━━━━\n"
 
     # Evaluate Winner
+    att_score = att_total_attack - def_total_defense
+    def_score = def_total_attack - att_total_defense
+
     winner_is_att = None
-    if att_total_attack > def_total_defense:
+    if att_score > def_score:
         winner_is_att = True
-    elif def_total_attack > att_total_defense:
+    elif def_score > att_score:
         winner_is_att = False
 
     if winner_is_att is True:
@@ -3032,11 +3035,12 @@ def callback_handler(call: types.CallbackQuery):
                     
                     cur.execute("UPDATE alliances SET territory = ? WHERE id = ?", (json.dumps(territory, ensure_ascii=False), alliance['id']))
                 
-                    for unit_type, u_data in units.items():
-                        loss = int(u_data['count'] * 0.10)
-                        if loss > 0: update_army_unit(user_id, unit_type, count_delta=-loss)
-                    update_army_power_fields(user_id)
-                    add_exp(user_id, 200, chat_id)
+                # توابع زیر باید حتماً بیرون از بلاک with باشند:
+                for unit_type, u_data in units.items():
+                    loss = int(u_data['count'] * 0.10)
+                    if loss > 0: update_army_unit(user_id, unit_type, count_delta=-loss)
+                update_army_power_fields(user_id)
+                add_exp(user_id, 200, chat_id)
             else:
                 for unit_type, u_data in units.items():
                     loss = int(u_data['count'] * 0.30)
