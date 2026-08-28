@@ -1175,6 +1175,10 @@ def process_change_empire_name(message):
         bot.send_message(message.chat.id, "❌ نام نمی‌تواند خالی باشد.")
         return
         
+    if not re.match(r"^[A-Za-z]{3,12}$", new_name):
+        bot.send_message(message.chat.id, "❌ نام باید فقط شامل حروف انگلیسی باشد و بین ۳ تا ۱۲ کاراکتر طول داشته باشد (بدون عدد یا فاصله).")
+        return
+
     existing = get_user_by_empire_name(new_name)
     if existing and existing['user_id'] != user_id:
         bot.send_message(message.chat.id, "❌ این نام قبلاً استفاده شده است. لطفاً نام دیگری انتخاب کن:")
@@ -1821,6 +1825,14 @@ def process_alliance_roles(message):
             
             if target_user['user_id'] == user_id:
                 bot.send_message(message.chat.id, "❌ شما لیدر اتحاد هستید و نمی‌توانید نقش خود را تغییر دهید.")
+                return
+
+            if role.lower() == 'leader':
+                markup = build_inline_keyboard([
+                    [inline_btn("✅ بله، تغییر مالکیت", f"alliance_transfer_{target_user['user_id']}_{alliance['id']}", "danger")],
+                    [inline_btn("❌ خیر، انصراف", "alliance_menu", "primary")]
+                ])
+                bot.send_message(message.chat.id, f"⚠️ آیا مطمئن هستید که می‌خواهید مالکیت را به {emp_name} انتقال دهید؟ نقش شما به عضو ساده تغییر می‌کند.", reply_markup=markup)
                 return
             
             conn.execute("UPDATE alliance_members SET role = ? WHERE user_id = ? AND alliance_id = ?", (role, target_user['user_id'], alliance['id']))
