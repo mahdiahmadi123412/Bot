@@ -109,7 +109,8 @@ def init_db() -> None:
                 ban_reason TEXT DEFAULT '',
                 alliance_id INTEGER,
                 joined_at INTEGER DEFAULT 0,
-                last_seen INTEGER DEFAULT 0
+                last_seen INTEGER DEFAULT 0,
+                shield_expires_at INTEGER DEFAULT 0
             )
         """)
 
@@ -120,6 +121,7 @@ def init_db() -> None:
         add_column_if_not_exists(conn, 'users', 'current_action', 'TEXT')
         add_column_if_not_exists(conn, 'users', 'action_data', 'TEXT')
         add_column_if_not_exists(conn, 'users', 'is_in_war', 'INTEGER')
+        add_column_if_not_exists(conn, 'users', 'shield_expires_at', 'INTEGER DEFAULT 0')
         cur.execute('CREATE TABLE IF NOT EXISTS war_volunteers (user_id INTEGER PRIMARY KEY, alliance_id INTEGER, role TEXT)')
     
 
@@ -326,6 +328,25 @@ init_db()
 # ============================================================
 # 🧰 توابع کمکی دیتابیس
 # ============================================================
+def process_generals_depreciation(user_id: int, user: dict) -> None:
+    generals = json.loads(user.get('generals_json') or '[]')
+    changed = False
+    new_generals = []
+    current_time = now()
+    for g in generals:
+        exp_time = g.get('expires_at', 0)
+        if exp_time > 0 and current_time >= exp_time:
+            g['level'] = g.get('level', 1) - 1
+            g['expires_at'] = current_time + 18000
+            changed = True
+            if g['level'] > 0:
+                new_generals.append(g)
+        else:
+            new_generals.append(g)
+
+    if changed:
+        update_user(user_id, generals_json=json.dumps(new_generals))
+
 def get_user(user_id: int) -> Optional[Dict[str, Any]]:
     """دریافت اطلاعات کاربر و به‌روزرسانی خودکار تولید منابع"""
     with get_connection() as conn:
@@ -336,6 +357,7 @@ def get_user(user_id: int) -> Optional[Dict[str, Any]]:
             return None
         user = dict(row)
 
+    process_generals_depreciation(user_id, user)
     ensure_production(user_id, user)
 
     with get_connection() as conn:
@@ -663,18 +685,24 @@ def get_max_storage(buildings: Dict[str, Any]) -> int:
 
 def calculate_army_power(user_id: int) -> int:
     units = get_army_units(user_id)
+    user = get_user_raw(user_id)
     total = 0
     for unit_type, data in units.items():
         if unit_type in UNIT_TYPES:
             count = data['count']
             attack = UNIT_TYPES[unit_type]['attack']
             total += count * attack
+
+    if user:
+        generals = json.loads(user.get('generals_json') or '[]')
+        total += sum(g.get('level', 1) * 100 for g in generals)
+
     return total
 
 def calculate_army_defense(user_id: int) -> int:
     units = get_army_units(user_id)
     buildings = get_buildings(user_id)
-    total = buildings['wall_level'] * 10
+    total = buildings['wall_level'] * 50
     for unit_type, data in units.items():
         if unit_type in UNIT_TYPES:
             count = data['count']
@@ -709,97 +737,72 @@ def simulate_battle(attacker_id: int, defender_id: int) -> Dict[str, Any]:
     defender_attack = calculate_army_power(defender_id)
     defender_defense = calculate_army_defense(defender_id)
 
-    # Unit Tactical Relationship Calculations (Bonus vs / Weak vs)
-    a_tactical_bonus = 0.0
-    d_tactical_bonus = 0.0
-
-    # Categorize units for attacker and defender
-    a_cats = set(UNIT_TYPES[u_id].get('bonus_vs', '') for u_id in attacker_units if attacker_units[u_id]['count'] > 0 and UNIT_TYPES.get(u_id))
-    d_cats = set(UNIT_TYPES[u_id].get('bonus_vs', '') for u_id in defender_units if defender_units[u_id]['count'] > 0 and UNIT_TYPES.get(u_id))
-
-    # For every attacker unit
-    for au_id, au_data in attacker_units.items():
-        if au_data['count'] <= 0: continue
-        u_info = UNIT_TYPES.get(au_id)
-        if not u_info: continue
-
-        bonus_target = u_info.get('bonus_vs')
-        weak_target = u_info.get('weak_vs')
-
-        # Check against defender units
-        for du_id, du_data in defender_units.items():
-            if du_data['count'] <= 0: continue
-            d_info = UNIT_TYPES.get(du_id)
-            if not d_info: continue
-
-            # Use arbitrary string matching from unit type to determine class for basic logic (e.g. spearman vs cavalry)
-            # 'cavalry', 'infantry', 'ranged'
-            if bonus_target and bonus_target in du_id:
-                a_tactical_bonus += 0.20 * (au_data['count'] / max(1, sum(u['count'] for u in attacker_units.values())))
-            if weak_target and weak_target in du_id:
-                a_tactical_bonus -= 0.20 * (au_data['count'] / max(1, sum(u['count'] for u in attacker_units.values())))
-
-    for du_id, du_data in defender_units.items():
-        if du_data['count'] <= 0: continue
-        d_info = UNIT_TYPES.get(du_id)
-        if not d_info: continue
-
-        bonus_target = d_info.get('bonus_vs')
-        weak_target = d_info.get('weak_vs')
-
-        for au_id, au_data in attacker_units.items():
-            if au_data['count'] <= 0: continue
-            a_info = UNIT_TYPES.get(au_id)
-            if not a_info: continue
-
-            if bonus_target and bonus_target in au_id:
-                d_tactical_bonus += 0.20 * (du_data['count'] / max(1, sum(u['count'] for u in defender_units.values())))
-            if weak_target and weak_target in au_id:
-                d_tactical_bonus -= 0.20 * (du_data['count'] / max(1, sum(u['count'] for u in defender_units.values())))
-
-    attacker_attack = int(attacker_attack * (1 + a_tactical_bonus))
-    defender_defense = int(defender_defense * (1 + d_tactical_bonus))
-
-    # اعمال بونوس ژنرال‌ها به صورت صحیح
+    # Fetch General properties required for heals later
     attacker_generals = json.loads(attacker.get('generals_json') or '[]')
     defender_generals = json.loads(defender.get('generals_json') or '[]')
     
-    # اگر نوع بونوس ژنرال شامل کلمه attack بود، به مهاجم اضافه شود
-    a_bonus = sum(g.get('bonus_value', 0) for g in attacker_generals if 'attack' in g.get('bonus_type', ''))
-    
-    # اگر نوع بونوس ژنرال شامل defense یا heal بود، به مدافع اضافه شود
-    d_bonus = sum(g.get('bonus_value', 0) for g in defender_generals if 'defense' in g.get('bonus_type', '') or 'heal' in g.get('bonus_type', ''))
-    
-    attacker_attack = int(attacker_attack * (1 + a_bonus))
-    defender_defense = int(defender_defense * (1 + d_bonus))
-
-
-    # محاسبه ضریب تصادفی
-    random_factor_a = random.uniform(0.9, 1.1)
-    random_factor_d = random.uniform(0.9, 1.1)
-    total_power_a = (attacker_attack * random_factor_a + attacker_defense * 0.5)
-    total_power_d = (defender_attack * random_factor_d + defender_defense * 0.5)
-
-    total_power_a = max(1, int(total_power_a))
-    total_power_d = max(1, int(total_power_d))
-
-    attacker_win = total_power_a > total_power_d
-
-    # محاسبه تلفات
-    if attacker_win:
-        # Loser (Defender) loses 20%-40%
-        defender_loss_percent = random.uniform(0.20, 0.40)
-        # Winner (Attacker) loses based on power ratio formula
-        ratio = total_power_d / total_power_a
-        attacker_loss_percent = max(0.01, min(0.20, 0.25 * ratio))
-    else:
-        # Loser (Attacker) loses 20%-40%
-        attacker_loss_percent = random.uniform(0.20, 0.40)
-        # Winner (Defender) loses based on power ratio formula
-        ratio = total_power_a / total_power_d
-        defender_loss_percent = max(0.01, min(0.20, 0.25 * ratio))
-
+    # --- مکانیزم جدید دیوار (Wall Mechanics) ---
+    # 1. 5% attacker casualty immediately from wall
     attacker_losses = {}
+    for unit_type, data in list(attacker_units.items()):
+        wall_loss = int(data['count'] * 0.05)
+        if wall_loss > 0:
+            attacker_losses[unit_type] = attacker_losses.get(unit_type, 0) + wall_loss
+            attacker_units[unit_type]['count'] -= wall_loss
+
+    # Recalculate attacker power after wall pre-damage
+    total_power_a = 0
+    for unit_type, data in attacker_units.items():
+        if unit_type in UNIT_TYPES:
+            total_power_a += data['count'] * UNIT_TYPES[unit_type]['attack']
+
+    # Add general flat bonus
+    total_power_a += sum(g.get('level', 1) * 100 for g in attacker_generals)
+
+    # Calculate defender wall power
+    def_buildings = get_buildings(defender_id)
+    wall_power = def_buildings['wall_level'] * 50
+
+    # Subtract wall power from attacker
+    total_power_a -= wall_power
+
+    if total_power_a > 0:
+        # Wall breaks! Reset defender wall level
+        with get_connection() as conn:
+            conn.execute("UPDATE buildings SET wall_level = 1 WHERE user_id = ?", (defender_id,))
+        # Recalculate defender power (without wall bonus)
+        total_power_d = 0
+        for unit_type, data in defender_units.items():
+            if unit_type in UNIT_TYPES:
+                total_power_d += data['count'] * UNIT_TYPES[unit_type]['defense']
+        total_power_d += sum(g.get('level', 1) * 100 for g in defender_generals)
+
+        # Calculate arbitrary random noise
+        random_factor_a = random.uniform(0.9, 1.1)
+        random_factor_d = random.uniform(0.9, 1.1)
+        total_power_a = max(1, int(total_power_a * random_factor_a))
+        total_power_d = max(1, int(total_power_d * random_factor_d))
+
+        attacker_win = total_power_a > total_power_d
+
+        # Calculate dynamic casualties
+        if attacker_win:
+            defender_loss_percent = random.uniform(0.20, 0.40)
+            ratio = total_power_d / total_power_a
+            attacker_loss_percent = max(0.01, min(0.20, 0.25 * ratio))
+        else:
+            attacker_loss_percent = random.uniform(0.20, 0.40)
+            ratio = total_power_a / total_power_d
+            defender_loss_percent = max(0.01, min(0.20, 0.25 * ratio))
+
+    else:
+        # Attacker didn't even break the wall
+        attacker_win = False
+        total_power_a = 1  # prevent div/0
+        total_power_d = wall_power
+        attacker_loss_percent = random.uniform(0.20, 0.40)
+        defender_loss_percent = 0.0
+
     defender_losses = {}
 
     # قابلیت درمان (Medics/Heal Generals)
@@ -817,7 +820,7 @@ def simulate_battle(attacker_id: int, defender_id: int) -> Dict[str, Any]:
             healed = int(loss * min(1.0, a_heal_bonus))
             loss -= healed
         if loss > 0:
-            attacker_losses[unit_type] = loss
+            attacker_losses[unit_type] = attacker_losses.get(unit_type, 0) + loss
 
     for unit_type, data in defender_units.items():
         loss = int(data['count'] * defender_loss_percent)
@@ -959,7 +962,7 @@ def roll_gacha(user_id: int) -> Optional[Dict[str, Any]]:
     user = get_user(user_id)
     if not user:
         return None
-    cost = 200
+    cost = 2000
     if user['coins'] < cost:
         return None
     update_user(user_id, coins=user['coins'] - cost)
@@ -983,6 +986,7 @@ def roll_gacha(user_id: int) -> Optional[Dict[str, Any]]:
             # ارتقاء سطح
             g['level'] = g.get('level', 1) + 1
             g['bonus_value'] += 0.05
+            g['expires_at'] = now() + 18000
             update_user(user_id, generals_json=json.dumps(generals))
             return selected
     generals.append({
@@ -991,7 +995,8 @@ def roll_gacha(user_id: int) -> Optional[Dict[str, Any]]:
         "bonus_type": selected['bonus_type'],
         "bonus_value": selected['bonus_value'],
         "level": 1,
-        "rarity": selected['rarity']
+        "rarity": selected['rarity'],
+        "expires_at": now() + 18000
     })
     update_user(user_id, generals_json=json.dumps(generals))
     return selected
@@ -1144,8 +1149,8 @@ def main_menu(user_id: int) -> InlineKeyboardMarkup:
     rows = [
         [inline_btn("📊 موجودی من", "profile", "primary"), inline_btn("🏭 جمع آوری منابع", "collect_resources", "success")],
         [inline_btn("⚔️ حمله و غارت", "attack_menu", "danger"), inline_btn("🛒 بازار", "market_menu", "primary")],
-        [inline_btn("🏰 ارتش و سربازان", "army_menu", "primary"),
- inline_btn("⬆️ ارتقای ساختمان‌ها", "building_menu", "success")],
+        [inline_btn("🏰 ارتش و سربازان", "army_menu", "primary"), inline_btn("⬆️ ارتقای ساختمان‌ها", "building_menu", "success")],
+        [inline_btn("🛡️ سپر دفاعی", "shield_menu", "warning")],
         [inline_btn("👥 اتحاد", "alliance_menu", "primary"), inline_btn("🎁 ژنرال‌ها", "gacha_menu", "success")],
         [inline_btn("🌍 باس جهانی", "world_boss_menu", "danger"), inline_btn("📜 گزارش‌های جنگ", "battle_reports", "primary")],
         [inline_btn("🏆 رتبه‌بندی", "leaderboard", "warning"), inline_btn("💰 جایزه‌بگیر", "bounty_menu", "danger")],
@@ -1208,7 +1213,7 @@ def process_change_empire_name(message):
     user_id = message.from_user.id
     new_name = message.text.strip()
     user = get_user(user_id)
-    if not user or user['coins'] < 200:
+    if not user or user['coins'] < 2000:
         bot.send_message(message.chat.id, "❌ سکه کافی ندارید.")
         return
     if not new_name:
@@ -1226,8 +1231,8 @@ def process_change_empire_name(message):
         return
         
     # ثبت نام جدید و کسر سکه
-    update_user(user_id, empire_name=new_name, coins=user['coins'] - 200)
-    bot.send_message(message.chat.id, f"✅ نام امپراطوری شما با موفقیت به «{new_name}» تغییر یافت!\n💰 ۲۰۰ سکه کسر شد.", reply_markup=main_menu(user_id))
+    update_user(user_id, empire_name=new_name, coins=user['coins'] - 2000)
+    bot.send_message(message.chat.id, f"✅ نام امپراطوری شما با موفقیت به «{new_name}» تغییر یافت!\n💰 ۲۰۰۰ سکه کسر شد.", reply_markup=main_menu(user_id))
 
 def process_admin_force_join(message):
     user_id = message.from_user.id
@@ -1396,6 +1401,32 @@ def edit_or_send(chat_id, message_id, text, reply_markup, user_id):
         msg = bot.send_message(chat_id, text, reply_markup=reply_markup)
         set_message_owner(chat_id, msg.message_id, user_id)
 
+
+def show_shield_menu(chat_id: int, user_id: int, message_id: Optional[int] = None):
+    user = get_user(user_id)
+    if not user: return
+
+    shield_time = user.get('shield_expires_at', 0)
+    current_time = now()
+
+    text = "🛡️ <b>سپر دفاعی امپراطوری</b>\n\n"
+    if shield_time > current_time:
+        rem = shield_time - current_time
+        mins, secs = divmod(rem, 60)
+        hrs, mins = divmod(mins, 60)
+        text += f"وضعیت فعلی: فعال ✅\nزمان باقیمانده: {hrs} ساعت و {mins} دقیقه\n"
+    else:
+        text += "وضعیت فعلی: غیرفعال ❌\n"
+
+    text += "\nهزینه فعال‌سازی (۲۴ ساعت):\n💰 10,000 سکه | 🪵 10,000 چوب\n🪨 10,000 سنگ | 🍖 10,000 غذا\n"
+
+    markup = build_inline_keyboard([
+        [inline_btn("فعال‌سازی سپر (۲۴ ساعت)", "buy_shield", "success")],
+        [inline_btn("🏠 بازگشت", "main_menu", "info")]
+    ])
+
+    edit_or_send(chat_id, message_id, text, markup, user_id)
+
 def show_profile(chat_id: int, user_id: int, message_id: Optional[int] = None):
     # بقیه کدهای این تابع همون حالت قبلی باشه...
     user = get_user(user_id)
@@ -1421,6 +1452,7 @@ def show_profile(chat_id: int, user_id: int, message_id: Optional[int] = None):
         f"🛡️ قدرت دفاع: {format_number(user['defense_power'])}\n"
         f"━━━━━━━━━━━━━━━━\n"
         f"🏰 سطح دیوار: {buildings['wall_level']}\n"
+        f"🧱 قدرت دفاعی دیوار: {buildings['wall_level'] * 50}\n"
         f"🏗️ سطح سربازخانه: {buildings['barracks_level']}\n"
         f"🌾 سطح مزرعه: {buildings['farm_level']}\n"
         f"🪚 سطح کارخانه چوب: {buildings['sawmill_level']}\n"
@@ -1431,7 +1463,7 @@ def show_profile(chat_id: int, user_id: int, message_id: Optional[int] = None):
     
     # دکمه تغییر نام اینجا اضافه شده
     markup = build_inline_keyboard([
-        [inline_btn("✏️ تغییر نام امپراطوری (۲۰۰ سکه)", "change_empire_name", "danger")],
+        [inline_btn("✏️ تغییر نام امپراطوری (۲۰۰۰ سکه)", "change_empire_name", "danger")],
         [inline_btn("🔄 به‌روزرسانی", "profile", "primary")],
         [inline_btn("🏠 بازگشت", "main_menu", "primary")]
     ])
@@ -1486,7 +1518,8 @@ def show_army_menu(chat_id: int, user_id: int, message_id: Optional[int] = None)
                     f"  🗡️ حمله: {info['attack']} | 🛡️ دفاع: {info['defense']}\n"
                 )
     text += f"\n⚔️ کل قدرت حمله: {format_number(user['attack_power'])}\n"
-    text += f"🛡️ کل قدرت دفاع: {format_number(user['defense_power'])}\n\n"
+    text += f"🛡️ کل قدرت دفاع: {format_number(user['defense_power'])}\n"
+    text += f"🧱 قدرت دفاعی دیوار: {buildings['wall_level'] * 50}\n\n"
     text += "برای استخدام سرباز انتخاب کنید:\n"
     
     rows = []
@@ -1669,7 +1702,7 @@ def show_gacha_menu(chat_id: int, user_id: int, message_id: Optional[int] = None
     generals = json.loads(user.get('generals_json') or '[]')
     text = "🎁 <b>ژنرال‌ها (Gacha)</b>\n\n"
     text += f"سکه شما: {format_number(user['coins'])}\n"
-    text += "هر بار احضار ۲۰۰ سکه هزینه دارد.\n\n"
+    text += "هر بار احضار ۲۰۰۰ سکه هزینه دارد.\n\n"
     if generals:
         text += "ژنرال‌های شما:\n"
         for g in generals:
@@ -1677,7 +1710,7 @@ def show_gacha_menu(chat_id: int, user_id: int, message_id: Optional[int] = None
     else:
         text += "هنوز ژنرالی احضار نکرده‌اید.\n"
     rows = [
-        [inline_btn("🎲 احضار ژنرال (۲۰۰ سکه)", "gacha_roll", "danger")],
+        [inline_btn("🎲 احضار ژنرال (۲۰۰۰ سکه)", "gacha_roll", "danger")],
         [inline_btn("🏠 بازگشت", "main_menu", "info")]
     ]
     markup = build_inline_keyboard(rows)
@@ -2471,6 +2504,28 @@ def callback_handler(call: types.CallbackQuery):
             show_leaderboard(chat_id, user_id, message_id)
             return
 
+        if data == 'shield_menu':
+            show_shield_menu(chat_id, user_id, message_id)
+            return
+
+        if data == 'buy_shield':
+            user = get_user(user_id)
+            if not user: return
+
+            if user['coins'] < 10000 or user['wood'] < 10000 or user['stone'] < 10000 or user['food'] < 10000:
+                bot.answer_callback_query(call.id, "❌ منابع کافی برای فعال‌سازی سپر ندارید!", show_alert=True)
+                return
+
+            shield_time = user.get('shield_expires_at', 0)
+            if shield_time > now():
+                bot.answer_callback_query(call.id, "⚠️ سپر شما هم‌اکنون فعال است!", show_alert=True)
+                return
+
+            update_user(user_id, coins=user['coins']-10000, wood=user['wood']-10000, stone=user['stone']-10000, food=user['food']-10000, shield_expires_at=now()+86400)
+            bot.answer_callback_query(call.id, "✅ سپر دفاعی با موفقیت برای 24 ساعت فعال شد!", show_alert=True)
+            show_shield_menu(chat_id, user_id, message_id)
+            return
+
         if data == 'change_empire_name':
             user = get_user(user_id)
             if user['coins'] < 200:
@@ -3011,10 +3066,14 @@ def callback_handler(call: types.CallbackQuery):
 
             region_data = TERRITORY_REGIONS[region_id]
             user_power = calculate_army_power(user_id)
+            territory = json.loads(alliance.get('territory', '{}'))
+            r_name = region_data['name']
+
+            terr_level = territory.get(r_name, {}).get('level', 1)
+            if isinstance(terr_level, dict): terr_level = terr_level.get('level', 1) # Fallback for old data
+            current_region_defense = region_data['defense'] * terr_level
             
-            if user_power >= region_data['defense']:
-                territory = json.loads(alliance.get('territory', '{}'))
-                r_name = region_data['name']
+            if user_power >= current_region_defense:
                 
                 with get_connection() as conn:
                     cur = conn.cursor()
@@ -3044,8 +3103,10 @@ def callback_handler(call: types.CallbackQuery):
                     cur.execute("UPDATE alliances SET territory = ? WHERE id = ?", (json.dumps(territory, ensure_ascii=False), alliance['id']))
                 
                 # توابع زیر باید حتماً بیرون از بلاک with باشند:
+                loss_ratio = (current_region_defense / max(1, user_power)) * 0.20
+                loss_ratio = max(0.01, min(loss_ratio, 0.20))
                 for unit_type, u_data in units.items():
-                    loss = int(u_data['count'] * 0.10)
+                    loss = int(u_data['count'] * loss_ratio)
                     if loss > 0: update_army_unit(user_id, unit_type, count_delta=-loss)
                 update_army_power_fields(user_id)
                 add_exp(user_id, 200, chat_id)
@@ -3054,7 +3115,7 @@ def callback_handler(call: types.CallbackQuery):
                     loss = int(u_data['count'] * 0.30)
                     if loss > 0: update_army_unit(user_id, unit_type, count_delta=-loss)
                 update_army_power_fields(user_id)
-                text = f"❌ <b>شکست سخت!</b>\n\nقدرت شما ({format_number(user_power)}) از محافظان ({format_number(region_data['defense'])}) کمتر بود. ۳۰٪ از ارتش شما از بین رفت."
+                text = f"❌ <b>شکست سخت!</b>\n\nقدرت شما ({format_number(user_power)}) از محافظان ({format_number(current_region_defense)}) کمتر بود. ۳۰٪ از ارتش شما از بین رفت."
                 
             edit_or_send(chat_id, message_id, text, build_inline_keyboard([[inline_btn("🏠 بازگشت به اتحاد", "alliance_menu")]]), user_id)
             return
@@ -3171,6 +3232,10 @@ def process_pvp_attack(message):
     defender_id = target_user['user_id']
     if attacker_id == defender_id:
         bot.send_message(message.chat.id, "❌ نمی‌توانید به خودتان حمله کنید!")
+        return
+
+    if target_user.get('shield_expires_at', 0) > now():
+        bot.send_message(message.chat.id, "❌ این امپراطوری در حالت سپر دفاعی است!")
         return
         
 
