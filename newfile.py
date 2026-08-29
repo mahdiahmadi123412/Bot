@@ -72,16 +72,9 @@ CASTLE_NAMES = [
 ]
 
 GACHA_POOL = [
-    {"id": "gen_ares", "name": "آرس", "bonus_type": "attack", "bonus_value": 0.20, "rarity": "legendary"},
-    {"id": "gen_athena", "name": "آتنا", "bonus_type": "defense", "bonus_value": 0.20, "rarity": "legendary"},
-    {"id": "gen_leonidas", "name": "لئونیداس", "bonus_type": "spearman_attack", "bonus_value": 0.25, "rarity": "epic"},
-    {"id": "gen_ramses", "name": "رامسس", "bonus_type": "archer_attack", "bonus_value": 0.25, "rarity": "epic"},
-    {"id": "gen_attila", "name": "آتیلا", "bonus_type": "cavalry_attack", "bonus_value": 0.25, "rarity": "epic"},
-    {"id": "gen_sun_tzu", "name": "سان تزو", "bonus_type": "all_attack", "bonus_value": 0.10, "rarity": "rare"},
-    {"id": "gen_hippocrates", "name": "بقراط", "bonus_type": "medic_heal", "bonus_value": 0.30, "rarity": "rare"},
-    {"id": "gen_achilles", "name": "آخیلوس", "bonus_type": "attack", "bonus_value": 0.15, "rarity": "rare"},
-    {"id": "gen_odysseus", "name": "اودیسه", "bonus_type": "scout_speed", "bonus_value": 0.50, "rarity": "rare"},
-    {"id": "gen_caesar", "name": "سزار", "bonus_type": "all_attack", "bonus_value": 0.15, "rarity": "epic"},
+    {"id": "gen_rabel", "name": "ژنرال رابل", "power_per_level": 100, "rarity": "common"},
+    {"id": "gen_charles", "name": "ژنرال چارلز", "power_per_level": 150, "rarity": "rare"},
+    {"id": "gen_carlos", "name": "ژنرال کارلوس", "power_per_level": 200, "rarity": "epic"}
 ]
 
 TERRITORY_REGIONS = {
@@ -455,6 +448,7 @@ def process_generals_depreciation(user_id: int, user: dict) -> None:
 
     if changed:
         update_user(user_id, generals_json=json.dumps(new_generals))
+        update_army_power_fields(user_id)
 
 def get_user(user_id: int) -> Optional[Dict[str, Any]]:
     """دریافت اطلاعات کاربر و به‌روزرسانی خودکار تولید منابع"""
@@ -799,7 +793,7 @@ def calculate_army_power(user_id: int) -> int:
 
     if user:
         generals = json.loads(user.get('generals_json') or '[]')
-        total += sum(g.get('level', 1) * 100 for g in generals)
+        total += sum(g.get('level', 1) * g.get('power_per_level', 100) for g in generals)
 
     return total
 
@@ -861,7 +855,7 @@ def simulate_battle(attacker_id: int, defender_id: int) -> Dict[str, Any]:
             total_power_a += data['count'] * UNIT_TYPES[unit_type]['attack']
 
     # Add general flat bonus
-    total_power_a += sum(g.get('level', 1) * 100 for g in attacker_generals)
+    total_power_a += sum(g.get('level', 1) * g.get('power_per_level', 100) for g in attacker_generals)
 
     # Calculate defender wall power
     def_buildings = get_buildings(defender_id)
@@ -879,7 +873,7 @@ def simulate_battle(attacker_id: int, defender_id: int) -> Dict[str, Any]:
         for unit_type, data in defender_units.items():
             if unit_type in UNIT_TYPES:
                 total_power_d += data['count'] * UNIT_TYPES[unit_type]['defense']
-        total_power_d += sum(g.get('level', 1) * 100 for g in defender_generals)
+        total_power_d += sum(g.get('level', 1) * g.get('power_per_level', 100) for g in defender_generals)
 
         # Calculate arbitrary random noise
         random_factor_a = random.uniform(0.9, 1.1)
@@ -1059,34 +1053,34 @@ def roll_gacha(user_id: int) -> Optional[Dict[str, Any]]:
     if user['coins'] < cost:
         return None
     update_user(user_id, coins=user['coins'] - cost)
-    # تعیین شانس
+    # تعیین شانس: ۵۵٪ common، ۳۰٪ rare، ۱۵٪ epic
     r = random.random()
-    if r < 0.02:
-        rarity = 'legendary'
-    elif r < 0.12:
+    if r <= 0.15:
         rarity = 'epic'
-    elif r < 0.40:
+    elif r <= 0.45:
         rarity = 'rare'
     else:
         rarity = 'common'
+
     pool = [g for g in GACHA_POOL if g['rarity'] == rarity] or GACHA_POOL
     selected = random.choice(pool)
+
     # ذخیره ژنرال
     generals = json.loads(user.get('generals_json') or '[]')
+
     # بررسی وجود
     for g in generals:
         if g['id'] == selected['id']:
             # ارتقاء سطح
             g['level'] = g.get('level', 1) + 1
-            g['bonus_value'] += 0.05
             g['expires_at'] = now() + 18000
             update_user(user_id, generals_json=json.dumps(generals))
             return selected
+
     generals.append({
         "id": selected['id'],
         "name": selected['name'],
-        "bonus_type": selected['bonus_type'],
-        "bonus_value": selected['bonus_value'],
+        "power_per_level": selected['power_per_level'],
         "level": 1,
         "rarity": selected['rarity'],
         "expires_at": now() + 18000
@@ -1558,6 +1552,15 @@ def show_profile(chat_id: int, user_id: int, message_id: Optional[int] = None):
         f"📦 سطح انبار: {buildings['storage_level']}\n"
     )
     
+    generals = json.loads(user.get('generals_json') or '[]')
+    if generals:
+        text += "\n🎁 <b>ژنرال‌های ارتش:</b>\n"
+        for g in generals:
+            gen_power = g.get('level', 1) * g.get('power_per_level', 100)
+            text += f"• {g['name']} (سطح {g.get('level', 1)}) 🗡 قدرت: {format_number(gen_power)}\n"
+        text += "━━━━━━━━━━━━━━━━\n"
+
+
     # دکمه تغییر نام اینجا اضافه شده
     markup = build_inline_keyboard([
         [inline_btn("✏️ تغییر نام امپراطوری (۲۰۰۰ سکه)", "change_empire_name", "danger")],
