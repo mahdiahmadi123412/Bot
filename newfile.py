@@ -903,14 +903,9 @@ def simulate_battle(attacker_id: int, defender_id: int) -> Dict[str, Any]:
 
     defender_losses = {}
 
-    # قابلیت درمان (Medics/Heal Generals)
-    a_heal_bonus = sum(g.get('bonus_value', 0) for g in attacker_generals if 'heal' in g.get('bonus_type', ''))
-    if any('medic' in k for k in attacker_units.keys()):
-        a_heal_bonus += 0.35
-
-    d_heal_bonus = sum(g.get('bonus_value', 0) for g in defender_generals if 'heal' in g.get('bonus_type', ''))
-    if any('medic' in k for k in defender_units.keys()):
-        d_heal_bonus += 0.35
+    # قابلیت درمان (Medics)
+    a_heal_bonus = 0.35 if any('medic' in k for k in attacker_units.keys()) else 0
+    d_heal_bonus = 0.35 if any('medic' in k for k in defender_units.keys()) else 0
 
     for unit_type, data in attacker_units.items():
         loss = int(data['count'] * attacker_loss_percent)
@@ -1776,7 +1771,8 @@ def show_gacha_menu(chat_id: int, user_id: int, message_id: Optional[int] = None
     if generals:
         text += "ژنرال‌های شما:\n"
         for g in generals:
-            text += f"• {g['name']} (سطح {g.get('level', 1)}) — {g['bonus_type']} +{int(g['bonus_value']*100)}%\n"
+            gen_power = g.get('level', 1) * g.get('power_per_level', 100)
+            text += f"• {g['name']} (سطح {g.get('level', 1)}) 🗡 قدرت افزوده: {format_number(gen_power)}\n"
     else:
         text += "هنوز ژنرالی احضار نکرده‌اید.\n"
     rows = [
