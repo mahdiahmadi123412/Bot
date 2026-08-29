@@ -2246,8 +2246,14 @@ def show_leaderboard(chat_id: int, user_id: int, message_id: Optional[int] = Non
         cur.execute("SELECT COUNT(*) + 1 FROM users WHERE banned = 0 AND (level > (SELECT level FROM users WHERE user_id = ?) OR (level = (SELECT level FROM users WHERE user_id = ?) AND attack_power > (SELECT attack_power FROM users WHERE user_id = ?)))", (user_id, user_id, user_id))
         user_rank = cur.fetchone()[0]
 
-        # 3. Top 5 Alliances
-        cur.execute("SELECT id, name, level FROM alliances ORDER BY level DESC LIMIT 5")
+        # 3. Top 5 Alliances (بهینه شده با JOIN)
+        cur.execute('''
+            SELECT a.id, a.name, a.level, COUNT(am.user_id) as member_count
+            FROM alliances a
+            LEFT JOIN alliance_members am ON a.id = am.alliance_id
+            GROUP BY a.id
+            ORDER BY a.level DESC LIMIT 5
+        ''')
         top_alliances = cur.fetchall()
 
         # 4. User's alliance rank
@@ -2255,7 +2261,6 @@ def show_leaderboard(chat_id: int, user_id: int, message_id: Optional[int] = Non
         alliance_rank_text = "شما در هیچ اتحادی نیستید."
         if user_alliance:
             all_id = user_alliance['id']
-            # We need to get member counts per alliance for ranking, simpler to just rank by level, then member count if we use a subquery or we rank in python.
             cur.execute("SELECT COUNT(*) + 1 FROM alliances WHERE level > ?", (user_alliance['level'],))
             all_rank = cur.fetchone()[0]
             alliance_rank_text = str(all_rank)
@@ -2267,10 +2272,8 @@ def show_leaderboard(chat_id: int, user_id: int, message_id: Optional[int] = Non
 
         text += "\n👥 <b>اتحادهای برتر:</b>\n"
         for i, al in enumerate(top_alliances):
-            # count members
-            cur.execute("SELECT COUNT(*) FROM alliance_members WHERE alliance_id = ?", (al['id'],))
-            m_count = cur.fetchone()[0]
-            text += f"{i+1}. {al['name']} (سطح: {al['level']} | اعضا: {m_count})\n"
+            al = dict(al)
+            text += f"{i+1}. {al['name']} (سطح: {al['level']} | اعضا: {al['member_count']})\n"
 
         text += "\n━━━━━━━━━━━━━━━━\n"
         text += f"🏅 رتبه امپراطوری شما: {user_rank}\n"
@@ -3432,7 +3435,14 @@ def recruit_unit(chat_id: int, user_id: int, unit_type: str, message_id: int):
 def show_alliance_list(chat_id: int, user_id: int, message_id: Optional[int] = None):
     with get_connection() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT * FROM alliances ORDER BY id DESC LIMIT 10")
+        # استفاده از LEFT JOIN برای گرفتن تعداد اعضا در یک کوئری
+        cur.execute("""
+            SELECT a.*, COUNT(am.user_id) as member_count
+            FROM alliances a
+            LEFT JOIN alliance_members am ON a.id = am.alliance_id
+            GROUP BY a.id
+            ORDER BY a.id DESC LIMIT 10
+        """)
         alliances = cur.fetchall()
         text = "📋 <b>فهرست اتحادها</b>\n\n"
         if not alliances:
@@ -3441,9 +3451,7 @@ def show_alliance_list(chat_id: int, user_id: int, message_id: Optional[int] = N
         rows = []
         for a in alliances:
             a = dict(a)
-            # Use query to get member count instead of N+1
-            cur.execute("SELECT COUNT(*) FROM alliance_members WHERE alliance_id = ?", (a['id'],))
-            member_count = cur.fetchone()[0]
+            member_count = a['member_count']
             capacity = a.get('capacity', 5)
             text += f"• {a['name']} (ظرفیت: {member_count}/{capacity})\n"
         
