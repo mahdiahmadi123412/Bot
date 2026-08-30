@@ -1176,11 +1176,24 @@ def attack_world_boss(user_id: int, soldiers: int) -> Dict[str, Any]:
     units = get_army_units(user_id)
     total = sum(u['count'] for u in units.values())
     if total > 0:
-        ratio = soldiers / total
+        soldiers_to_remove = soldiers
         for unit_type, data in units.items():
-            loss = int(data['count'] * ratio * 0.05)
-            if loss > 0:
-                update_army_unit(user_id, unit_type, count_delta=-loss)
+            if soldiers_to_remove <= 0: break
+            loss = int(data['count'] * (soldiers / total))
+            actual_loss = min(loss, data['count'], soldiers_to_remove)
+            if actual_loss > 0:
+                update_army_unit(user_id, unit_type, count_delta=-actual_loss)
+                soldiers_to_remove -= actual_loss
+
+        # جبران خطای گرد شدنِ پایتون تا دقیقاً سرباز مدنظر کم شود
+        if soldiers_to_remove > 0:
+            units = get_army_units(user_id)
+            for unit_type, data in units.items():
+                if soldiers_to_remove <= 0: break
+                if data['count'] > 0:
+                    actual_loss = min(data['count'], soldiers_to_remove)
+                    update_army_unit(user_id, unit_type, count_delta=-actual_loss)
+                    soldiers_to_remove -= actual_loss
     update_army_power_fields(user_id)
     new_hp = max(0, boss['hp'] - damage)
 
@@ -1198,7 +1211,7 @@ def attack_world_boss(user_id: int, soldiers: int) -> Dict[str, Any]:
             cur.execute("UPDATE world_boss SET hp = 0, active = 0 WHERE id = ?", (boss['id'],))
             cur.execute("INSERT INTO boss_attacks (boss_id, user_id, damage, created_at) VALUES (?, ?, ?, ?)",
                         (boss['id'], user_id, damage, int(time.time())))
-            update_user(user_id, coins=user['coins'] + 10000, wood=user['wood'] + 5000)
+            cur.execute("UPDATE users SET coins = coins + 10000, wood = wood + 5000 WHERE user_id = ?", (user_id,))
             return {'success': True, 'damage': damage, 'new_hp': 0, 'max_hp': boss['max_hp'], 'killed': True}
         else:
             cur.execute("UPDATE world_boss SET hp = ? WHERE id = ?", (real_new_hp, boss['id']))
@@ -3160,7 +3173,7 @@ def callback_handler(call: types.CallbackQuery):
             if isinstance(conquered_level, dict): conquered_level = conquered_level.get('level', 0)
             next_level = conquered_level + 1
             current_region_defense = region_data['defense'] * next_level
-            
+
             if user_power >= current_region_defense:
                 
                 with get_connection() as conn:
