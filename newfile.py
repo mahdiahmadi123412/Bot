@@ -3184,7 +3184,7 @@ def callback_handler(call: types.CallbackQuery):
                     if r_name in territory:
                         territory[r_name]['level'] += 1
                     else:
-                        territory[r_name] = {'level': 1}
+                        territory[r_name] = {'level': 2}
                     
                     cur.execute("UPDATE alliances SET territory = ? WHERE id = ?", (json.dumps(territory, ensure_ascii=False), alliance['id']))
                 
