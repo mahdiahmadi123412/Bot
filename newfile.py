@@ -3156,7 +3156,7 @@ def callback_handler(call: types.CallbackQuery):
             r_name = region_data['name']
 
             terr_level = territory.get(r_name, {}).get('level', 1)
-            if isinstance(terr_level, dict): terr_level = terr_level.get('level', 1) # Fallback for old data
+            if isinstance(terr_level, dict): terr_level = terr_level.get('level', 1)
             current_region_defense = region_data['defense'] * terr_level
             
             if user_power >= current_region_defense:
@@ -3176,10 +3176,10 @@ def callback_handler(call: types.CallbackQuery):
                         reward = a_level * 5000
                         cur.execute("UPDATE alliances SET level = ?, captures = ?, treasury_coins = treasury_coins + ?, treasury_wood = treasury_wood + ?, treasury_stone = treasury_stone + ?, treasury_food = treasury_food + ? WHERE id = ?",
                                     (a_level, captures, reward, reward, reward, reward, alliance['id']))
-                        text = f"🎉 <b>پیروزی سترگ!</b>\n\nمحافظان <b>{r_name}</b> شکست خوردند.\n⭐ <b>سطح اتحاد ارتقا یافت! (سطح {a_level})</b>\n💰 مقدار {format_number(reward)} از تمام منابع به عنوان پاداش لول‌آپ به خزانه واریز شد!"
+                        text = f"🎉 <b>پیروزی سترگ!</b>\n\nمحافظان سطح {terr_level} در منطقه <b>{r_name}</b> شکست خوردند و منطقه به سطح {terr_level + 1} ارتقا یافت.\n⭐ <b>سطح اتحاد ارتقا یافت! (سطح {a_level})</b>\n💰 مقدار {format_number(reward)} پاداش گرفتید!"
                     else:
                         cur.execute("UPDATE alliances SET captures = ? WHERE id = ?", (captures, alliance['id']))
-                        text = f"🎉 <b>پیروزی!</b>\n\nمحافظان <b>{r_name}</b> شکست خوردند.\nپیشرفت تا ارتقای سطح اتحاد: {captures}/{req_captures}"
+                        text = f"🎉 <b>پیروزی!</b>\n\nمحافظان سطح {terr_level} در منطقه <b>{r_name}</b> شکست خوردند و منطقه به سطح {terr_level + 1} ارتقا یافت.\nپیشرفت تا ارتقای سطح اتحاد: {captures}/{req_captures}"
                 
                     if r_name in territory:
                         territory[r_name]['level'] += 1
@@ -3188,7 +3188,6 @@ def callback_handler(call: types.CallbackQuery):
                     
                     cur.execute("UPDATE alliances SET territory = ? WHERE id = ?", (json.dumps(territory, ensure_ascii=False), alliance['id']))
                 
-                # توابع زیر باید حتماً بیرون از بلاک with باشند:
                 loss_ratio = (current_region_defense / max(1, user_power)) * 0.20
                 loss_ratio = max(0.01, min(loss_ratio, 0.20))
                 for unit_type, u_data in units.items():
@@ -3201,7 +3200,7 @@ def callback_handler(call: types.CallbackQuery):
                     loss = int(u_data['count'] * 0.30)
                     if loss > 0: update_army_unit(user_id, unit_type, count_delta=-loss)
                 update_army_power_fields(user_id)
-                text = f"❌ <b>شکست سخت!</b>\n\nقدرت شما ({format_number(user_power)}) از محافظان ({format_number(current_region_defense)}) کمتر بود. ۳۰٪ از ارتش شما از بین رفت."
+                text = f"❌ <b>شکست سخت!</b>\n\nقدرت شما ({format_number(user_power)}) برای شکست محافظان سطح {terr_level} ({format_number(current_region_defense)}) کافی نبود. ۳۰٪ از ارتش شما از بین رفت."
                 
             edit_or_send(chat_id, message_id, text, build_inline_keyboard([[inline_btn("🏠 بازگشت به اتحاد", "alliance_menu")]]), user_id)
             return
