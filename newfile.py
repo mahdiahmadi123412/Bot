@@ -3155,9 +3155,11 @@ def callback_handler(call: types.CallbackQuery):
             territory = json.loads(alliance.get('territory', '{}'))
             r_name = region_data['name']
 
-            terr_level = territory.get(r_name, {}).get('level', 1)
-            if isinstance(terr_level, dict): terr_level = terr_level.get('level', 1)
-            current_region_defense = region_data['defense'] * terr_level
+            # پیدا کردن سطح فتح‌شده و تعیین هدف بعدی
+            conquered_level = territory.get(r_name, {}).get('level', 0)
+            if isinstance(conquered_level, dict): conquered_level = conquered_level.get('level', 0)
+            next_level = conquered_level + 1
+            current_region_defense = region_data['defense'] * next_level
             
             if user_power >= current_region_defense:
                 
@@ -3176,15 +3178,16 @@ def callback_handler(call: types.CallbackQuery):
                         reward = a_level * 5000
                         cur.execute("UPDATE alliances SET level = ?, captures = ?, treasury_coins = treasury_coins + ?, treasury_wood = treasury_wood + ?, treasury_stone = treasury_stone + ?, treasury_food = treasury_food + ? WHERE id = ?",
                                     (a_level, captures, reward, reward, reward, reward, alliance['id']))
-                        text = f"🎉 <b>پیروزی سترگ!</b>\n\nمحافظان سطح {terr_level} در منطقه <b>{r_name}</b> شکست خوردند و منطقه به سطح {terr_level + 1} ارتقا یافت.\n⭐ <b>سطح اتحاد ارتقا یافت! (سطح {a_level})</b>\n💰 مقدار {format_number(reward)} پاداش گرفتید!"
+                        text = f"🎉 <b>پیروزی سترگ!</b>\n\nمحافظان سطح {next_level} در منطقه <b>{r_name}</b> شکست خوردند و منطقه فتح شد.\n⭐ <b>سطح اتحاد ارتقا یافت! (سطح {a_level})</b>\n💰 مقدار {format_number(reward)} پاداش گرفتید!"
                     else:
                         cur.execute("UPDATE alliances SET captures = ? WHERE id = ?", (captures, alliance['id']))
-                        text = f"🎉 <b>پیروزی!</b>\n\nمحافظان سطح {terr_level} در منطقه <b>{r_name}</b> شکست خوردند و منطقه به سطح {terr_level + 1} ارتقا یافت.\nپیشرفت تا ارتقای سطح اتحاد: {captures}/{req_captures}"
+                        text = f"🎉 <b>پیروزی!</b>\n\nمحافظان سطح {next_level} در منطقه <b>{r_name}</b> شکست خوردند و منطقه فتح شد.\nپیشرفت تا ارتقای سطح اتحاد: {captures}/{req_captures}"
                 
+                    # ذخیره سطح جدید در دیتابیس
                     if r_name in territory:
-                        territory[r_name]['level'] += 1
+                        territory[r_name]['level'] = next_level
                     else:
-                        territory[r_name] = {'level': 2}
+                        territory[r_name] = {'level': next_level}
                     
                     cur.execute("UPDATE alliances SET territory = ? WHERE id = ?", (json.dumps(territory, ensure_ascii=False), alliance['id']))
                 
@@ -3200,7 +3203,7 @@ def callback_handler(call: types.CallbackQuery):
                     loss = int(u_data['count'] * 0.30)
                     if loss > 0: update_army_unit(user_id, unit_type, count_delta=-loss)
                 update_army_power_fields(user_id)
-                text = f"❌ <b>شکست سخت!</b>\n\nقدرت شما ({format_number(user_power)}) برای شکست محافظان سطح {terr_level} ({format_number(current_region_defense)}) کافی نبود. ۳۰٪ از ارتش شما از بین رفت."
+                text = f"❌ <b>شکست سخت!</b>\n\nقدرت شما ({format_number(user_power)}) برای شکست محافظان سطح {next_level} ({format_number(current_region_defense)}) کافی نبود. ۳۰٪ از ارتش شما از بین رفت."
                 
             edit_or_send(chat_id, message_id, text, build_inline_keyboard([[inline_btn("🏠 بازگشت به اتحاد", "alliance_menu")]]), user_id)
             return
@@ -3502,14 +3505,15 @@ def show_territory_attack_menu(chat_id: int, user_id: int, message_id: Optional[
     for r_id, r_data in TERRITORY_REGIONS.items():
         r_name = r_data['name']
 
-        # محاسبه سطح منطقه
-        terr_level = territory.get(r_name, {}).get('level', 1)
-        if isinstance(terr_level, dict): terr_level = terr_level.get('level', 1)
+        # دریافت سطح فعلی (فتح شده)
+        conquered_level = territory.get(r_name, {}).get('level', 0)
+        if isinstance(conquered_level, dict): conquered_level = conquered_level.get('level', 0)
 
-        # محاسبه قدرت واقعی
-        current_region_defense = r_data['defense'] * terr_level
+        # محاسبه سطح بعدی برای حمله
+        next_level = conquered_level + 1
+        current_region_defense = r_data['defense'] * next_level
 
-        text += f"📍 <b>{r_name}</b> (سطح: {terr_level} | قدرت محافظان: {format_number(current_region_defense)})\n"
+        text += f"📍 <b>{r_name}</b> (حمله به سطح: {next_level} | قدرت محافظان: {format_number(current_region_defense)})\n"
         rows.append([inline_btn(f"⚔️ حمله به {r_name}", f"attack_region_{r_id}")])
     
     rows.append([inline_btn("🏠 بازگشت به اتحاد", "alliance_menu")])
