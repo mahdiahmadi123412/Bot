@@ -1070,6 +1070,7 @@ def roll_gacha(user_id: int) -> Optional[Dict[str, Any]]:
             g['level'] = g.get('level', 1) + 1
             g['expires_at'] = now() + 18000
             update_user(user_id, generals_json=json.dumps(generals))
+            update_army_power_fields(user_id)
             return selected
 
     generals.append({
@@ -1081,6 +1082,7 @@ def roll_gacha(user_id: int) -> Optional[Dict[str, Any]]:
         "expires_at": now() + 18000
     })
     update_user(user_id, generals_json=json.dumps(generals))
+    update_army_power_fields(user_id)
     return selected
 
 # ============================================================
@@ -2628,10 +2630,10 @@ def callback_handler(call: types.CallbackQuery):
 
         if data == 'change_empire_name':
             user = get_user(user_id)
-            if user['coins'] < 200:
-                bot.answer_callback_query(call.id, "❌ برای تغییر نام امپراطوری حداقل ۲۰۰ سکه نیاز داری!", show_alert=True)
+            if user['coins'] < 2000:
+                bot.answer_callback_query(call.id, "❌ برای تغییر نام امپراطوری حداقل ۲۰۰۰ سکه نیاز داری!", show_alert=True)
                 return
-            msg = bot.send_message(chat_id, "✏️ برای تغییر نام امپراطوری به ۲۰۰ سکه نیاز دارید. اسم جدید را وارد کنید:")
+            msg = bot.send_message(chat_id, "✏️ برای تغییر نام امپراطوری به ۲۰۰۰ سکه نیاز دارید. اسم جدید را وارد کنید:")
             set_user_state(user_id, 'process_change_empire_name')
             return
 
@@ -3493,13 +3495,23 @@ def show_territory_attack_menu(chat_id: int, user_id: int, message_id: Optional[
     alliance = get_alliance(user_id)
     if not alliance: return
     
+    territory = json.loads(alliance.get('territory', '{}'))
     text = "🗺️ <b>مناطق قابل تسخیر</b>\n\n"
     text += "فرمانده! ارتش خود را برای تسخیر این مناطق اعزام کنید. در صورت پیروزی، سطح منطقه در اتحاد بالا می‌رود.\n\n"
     
     rows = []
     for r_id, r_data in TERRITORY_REGIONS.items():
-        text += f"📍 <b>{r_data['name']}</b> (قدرت محافظان: {format_number(r_data['defense'])})\n"
-        rows.append([inline_btn(f"⚔️ حمله به {r_data['name']}", f"attack_region_{r_id}")])
+        r_name = r_data['name']
+
+        # محاسبه سطح منطقه
+        terr_level = territory.get(r_name, {}).get('level', 1)
+        if isinstance(terr_level, dict): terr_level = terr_level.get('level', 1)
+
+        # محاسبه قدرت واقعی
+        current_region_defense = r_data['defense'] * terr_level
+
+        text += f"📍 <b>{r_name}</b> (سطح: {terr_level} | قدرت محافظان: {format_number(current_region_defense)})\n"
+        rows.append([inline_btn(f"⚔️ حمله به {r_name}", f"attack_region_{r_id}")])
     
     rows.append([inline_btn("🏠 بازگشت به اتحاد", "alliance_menu")])
     edit_or_send(chat_id, message_id, text, build_inline_keyboard(rows), user_id)
