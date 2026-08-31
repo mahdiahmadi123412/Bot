@@ -839,68 +839,48 @@ def simulate_battle(attacker_id: int, defender_id: int) -> Dict[str, Any]:
     attacker_generals = json.loads(attacker.get('generals_json') or '[]')
     defender_generals = json.loads(defender.get('generals_json') or '[]')
     
-    # --- مکانیزم جدید دیوار (Wall Mechanics) ---
-    # 1. 5% attacker casualty immediately from wall
-    attacker_losses = {}
-    for unit_type, data in list(attacker_units.items()):
-        wall_loss = int(data['count'] * 0.05)
-        if wall_loss > 0:
-            attacker_losses[unit_type] = attacker_losses.get(unit_type, 0) + wall_loss
-            attacker_units[unit_type]['count'] -= wall_loss
-
-    # Recalculate attacker power after wall pre-damage
+    # محاسبه قدرت خالص قبل از درگیری
     total_power_a = 0
     for unit_type, data in attacker_units.items():
         if unit_type in UNIT_TYPES:
             total_power_a += data['count'] * UNIT_TYPES[unit_type]['attack']
-
-    # Add general flat bonus
     total_power_a += sum(g.get('level', 1) * g.get('power_per_level', 100) for g in attacker_generals)
 
-    # Calculate defender wall power
     def_buildings = get_buildings(defender_id)
     wall_power = def_buildings['wall_level'] * 50
 
-    # Subtract wall power from attacker
-    total_power_a -= wall_power
+    total_power_d = 0
+    for unit_type, data in defender_units.items():
+        if unit_type in UNIT_TYPES:
+            total_power_d += data['count'] * UNIT_TYPES[unit_type]['defense']
+    total_power_d += sum(g.get('level', 1) * g.get('power_per_level', 100) for g in defender_generals)
 
-    if total_power_a > 0:
-        # Wall breaks! Reset defender wall level
+    # --- مکانیزم جدید نبرد و دیوار مبتنی بر تناسب آسیب ---
+    if total_power_a > wall_power:
+        # مهاجم دیوار را می‌شکند
         with get_connection() as conn:
             conn.execute("UPDATE buildings SET wall_level = 1 WHERE user_id = ?", (defender_id,))
-        # Recalculate defender power (without wall bonus)
-        total_power_d = 0
-        for unit_type, data in defender_units.items():
-            if unit_type in UNIT_TYPES:
-                total_power_d += data['count'] * UNIT_TYPES[unit_type]['defense']
-        total_power_d += sum(g.get('level', 1) * g.get('power_per_level', 100) for g in defender_generals)
 
-        # Calculate arbitrary random noise
-        random_factor_a = random.uniform(0.9, 1.1)
-        random_factor_d = random.uniform(0.9, 1.1)
-        total_power_a = max(1, int(total_power_a * random_factor_a))
-        total_power_d = max(1, int(total_power_d * random_factor_d))
+        # محاسبه پیروزی در نبرد اصلی
+        attacker_win = total_power_a > (total_power_d + wall_power)
 
-        attacker_win = total_power_a > total_power_d
-
-        # Calculate dynamic casualties
         if attacker_win:
-            defender_loss_percent = random.uniform(0.20, 0.40)
-            ratio = total_power_d / total_power_a
-            attacker_loss_percent = max(0.01, min(0.20, 0.25 * ratio))
+            # مهاجم پیروز است: مدافع به شدت تار و مار می‌شود (حداقل ۸۰٪ تا ۱۰۰٪ تلفات)
+            defender_loss_percent = min(1.0, max(0.8, total_power_a / max(1, total_power_d)))
+            # تلفات مهاجم فقط به اندازه قدرت مدافع و قدرت دیوار است
+            attacker_loss_percent = min(0.5, total_power_d / max(1, total_power_a)) + (wall_power / max(1, total_power_a))
         else:
-            attacker_loss_percent = random.uniform(0.20, 0.40)
-            ratio = total_power_a / total_power_d
-            defender_loss_percent = max(0.01, min(0.20, 0.25 * ratio))
-
+            # مدافع پیروز است: مهاجم تلفات سنگین می‌دهد
+            attacker_loss_percent = min(1.0, max(0.5, (total_power_d + wall_power) / max(1, total_power_a)))
+            defender_loss_percent = min(0.5, total_power_a / max(1, total_power_d))
     else:
-        # Attacker didn't even break the wall
+        # قدرت مهاجم حتی برای شکستن دیوار هم کافی نبود
         attacker_win = False
-        total_power_a = 1  # prevent div/0
-        total_power_d = wall_power
-        attacker_loss_percent = random.uniform(0.20, 0.40)
+        attacker_loss_percent = min(1.0, wall_power / max(1, total_power_a))
         defender_loss_percent = 0.0
 
+    # اعمال درصدهای جدید روی ارتش‌ها
+    attacker_losses = {}
     defender_losses = {}
 
     # قابلیت درمان (Medics)
