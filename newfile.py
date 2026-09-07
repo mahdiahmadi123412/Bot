@@ -1364,6 +1364,21 @@ def set_user_state(user_id: int, action: str, data: dict = None):
 # ============================================================
 # 🚀 هندلرهای دستوری و پیام
 # ============================================================
+
+# ============================================================
+# 🛡️ سیستم مدیریت گروه
+# ============================================================
+from group_manager import register_group_handlers, check_anti_flood, check_message_content
+
+register_group_handlers(bot)
+
+@bot.message_handler(content_types=['text', 'photo', 'video', 'document', 'audio', 'voice', 'animation'], func=lambda m: m.chat.type in ['group', 'supergroup'] and (check_anti_flood(bot, m.chat.id, m.from_user.id, m.message_id) or check_message_content(bot, m)))
+def intercept_group_messages(message):
+    # This handler catches the message ONLY if it's a flood or contains bad content.
+    # The check functions handle the deletion/muting internally.
+    # We do nothing here, just absorb the message so other handlers don't process it.
+    pass
+
 @bot.message_handler(commands=['start'])
 def start_command(message):
     user_id = message.from_user.id
