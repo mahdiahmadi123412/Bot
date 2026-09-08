@@ -168,6 +168,17 @@ def check_message_content(bot, message) -> bool:
     chat_id = message.chat.id
     user_id = message.from_user.id
 
+    text = message.text or message.caption or ""
+
+    # 4. Triggers (Auto-response) - Placed before admin check so admins can trigger them too
+    if text:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT response FROM gm_triggers WHERE chat_id = ? AND keyword = ?", (chat_id, text.strip()))
+            trigger = cur.fetchone()
+            if trigger:
+                bot.reply_to(message, trigger['response'])
+
     if is_group_admin(bot, chat_id, user_id):
         return False
 
@@ -228,13 +239,7 @@ def check_message_content(bot, message) -> bool:
                 return True
             except: pass
 
-    # 4. Triggers (Auto-response)
-    with get_connection() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT response FROM gm_triggers WHERE chat_id = ? AND keyword = ?", (chat_id, text.strip()))
-        trigger = cur.fetchone()
-        if trigger:
-            bot.reply_to(message, trigger['response'])
+
 
     return False
 
@@ -323,7 +328,10 @@ def register_group_handlers(bot):
                 try:
                     # Mute user
                     bot.restrict_chat_member(chat_id, member.id, can_send_messages=False)
+                except Exception as e:
+                    logging.error("Failed to mute new member", exc_info=True)
 
+                try:
                     # Send Captcha prompt
                     name_or_id = f"@{member.username}" if member.username else member.first_name
                     text = f"{name_or_id} برای پیام دادن در گروه، باید به پی‌وی ربات رفته و کپچا را کامل کنید!"
@@ -344,7 +352,7 @@ def register_group_handlers(bot):
                     threading.Timer(120.0, cleanup, args=[chat_id, message.message_id, msg.message_id]).start()
 
                 except Exception as e:
-                    logging.error("Failed to process new member captcha", exc_info=True)
+                    logging.error("Failed to send captcha prompt", exc_info=True)
         else:
             try: bot.delete_message(chat_id, message.message_id)
             except: pass
@@ -361,10 +369,7 @@ def register_group_handlers(bot):
         text = message.text.strip()
         chat_id = message.chat.id
 
-        # Helper to execute silently
-        def silent_exit():
-            try: bot.delete_message(chat_id, message.message_id)
-            except: pass
+
 
         # قفل رسانه‌ها
         locks = {
@@ -384,12 +389,12 @@ def register_group_handlers(bot):
             if text == f"قفل {k}":
                 with get_connection() as conn:
                     conn.execute(f"UPDATE gm_settings SET {v} = 1 WHERE chat_id = ?", (chat_id,))
-                silent_exit()
+                bot.reply_to(message, f"✅ قفل {k} با موفقیت فعال شد.")
                 return
             if text == f"بازکردن {k}":
                 with get_connection() as conn:
                     conn.execute(f"UPDATE gm_settings SET {v} = 0 WHERE chat_id = ?", (chat_id,))
-                silent_exit()
+                bot.reply_to(message, f"✅ قفل {k} با موفقیت غیرفعال شد.")
                 return
 
         # اخطار
@@ -398,7 +403,7 @@ def register_group_handlers(bot):
             except: return
             with get_connection() as conn:
                 conn.execute("UPDATE gm_settings SET max_warns = ? WHERE chat_id = ?", (num, chat_id))
-            silent_exit()
+            bot.reply_to(message, f"✅ سقف اخطار به {num} تغییر یافت.")
             return
 
         if text == 'اخطار' and message.reply_to_message:
@@ -416,16 +421,19 @@ def register_group_handlers(bot):
                 if warns >= settings['max_warns']:
                     try:
                         bot.ban_chat_member(chat_id, target_id)
+                        bot.reply_to(message, f"🚫 کاربر سقف اخطار ({warns}/{settings['max_warns']}) را پر کرد و از گروه اخراج شد.")
                         cur.execute("DELETE FROM gm_warns WHERE chat_id = ? AND user_id = ?", (chat_id, target_id))
-                    except: pass
-            silent_exit()
+                    except:
+                        bot.reply_to(message, "❌ خطا در اخراج کاربر (ربات ادمین نیست؟)")
+                else:
+                    bot.reply_to(message, f"⚠️ یک اخطار ثبت شد. ({warns}/{settings['max_warns']})")
             return
 
         if text == 'حذف اخطار' and message.reply_to_message:
             target_id = message.reply_to_message.from_user.id
             with get_connection() as conn:
                 conn.execute("DELETE FROM gm_warns WHERE chat_id = ? AND user_id = ?", (chat_id, target_id))
-            silent_exit()
+            bot.reply_to(message, "✅ اخطارهای کاربر پاک شد.")
             return
 
         # لیست سیاه
@@ -434,7 +442,7 @@ def register_group_handlers(bot):
             if word:
                 with get_connection() as conn:
                     conn.execute("INSERT OR IGNORE INTO gm_blacklists (chat_id, word) VALUES (?, ?)", (chat_id, word))
-            silent_exit()
+                bot.reply_to(message, f"✅ کلمه «{word}» به لیست سیاه اضافه شد.")
             return
 
         if text.startswith('حذف کلمه '):
@@ -442,7 +450,7 @@ def register_group_handlers(bot):
             if word:
                 with get_connection() as conn:
                     conn.execute("DELETE FROM gm_blacklists WHERE chat_id = ? AND word = ?", (chat_id, word))
-            silent_exit()
+                bot.reply_to(message, f"✅ کلمه «{word}» از لیست سیاه حذف شد.")
             return
 
         # سکوت زمان دار
@@ -450,9 +458,11 @@ def register_group_handlers(bot):
             target_id = message.reply_to_message.from_user.id
             if is_group_admin(bot, chat_id, target_id): return
             seconds = parse_time(text.split()[1])
-            try: bot.restrict_chat_member(chat_id, target_id, until_date=int(time.time()) + seconds, can_send_messages=False)
-            except: pass
-            silent_exit()
+            try:
+                bot.restrict_chat_member(chat_id, target_id, until_date=int(time.time()) + seconds, can_send_messages=False)
+                bot.reply_to(message, f"✅ کاربر برای {text.split()[1]} بی‌صدا شد.")
+            except:
+                bot.reply_to(message, "❌ خطا در بی‌صدا کردن کاربر.")
             return
 
         # بن زمان دار
@@ -460,22 +470,26 @@ def register_group_handlers(bot):
             target_id = message.reply_to_message.from_user.id
             if is_group_admin(bot, chat_id, target_id): return
             seconds = parse_time(text.split()[1])
-            try: bot.ban_chat_member(chat_id, target_id, until_date=int(time.time()) + seconds)
-            except: pass
-            silent_exit()
+            try:
+                bot.ban_chat_member(chat_id, target_id, until_date=int(time.time()) + seconds)
+                bot.reply_to(message, f"✅ کاربر برای {text.split()[1]} از گروه اخراج شد.")
+            except:
+                bot.reply_to(message, "❌ خطا در بن کردن کاربر.")
             return
 
         # پین و آنپین
         if text == 'پین' and message.reply_to_message:
-            try: bot.pin_chat_message(chat_id, message.reply_to_message.message_id)
+            try:
+                bot.pin_chat_message(chat_id, message.reply_to_message.message_id)
+                bot.reply_to(message, "✅ پیام با موفقیت سنجاق شد.")
             except: pass
-            silent_exit()
             return
 
         if text == 'آنپین' and message.reply_to_message:
-            try: bot.unpin_chat_message(chat_id, message.reply_to_message.message_id)
+            try:
+                bot.unpin_chat_message(chat_id, message.reply_to_message.message_id)
+                bot.reply_to(message, "✅ پیام از سنجاق برداشته شد.")
             except: pass
-            silent_exit()
             return
 
         # یاد بگیر بگو
@@ -486,9 +500,10 @@ def register_group_handlers(bot):
             with get_connection() as conn:
                 if response:
                     conn.execute("INSERT OR REPLACE INTO gm_triggers (chat_id, keyword, response) VALUES (?, ?, ?)", (chat_id, trigger_keyword, response))
+                    bot.reply_to(message, "✅ ربات کلمه را یاد گرفت.")
                 else:
                     conn.execute("DELETE FROM gm_triggers WHERE chat_id = ? AND keyword = ?", (chat_id, trigger_keyword))
-            silent_exit()
+                    bot.reply_to(message, "✅ پاسخ ربات فراموش شد.")
             return
 
         # پاکسازی
