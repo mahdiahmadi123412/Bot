@@ -89,20 +89,26 @@ def setup(bot):
             bank = cur.fetchone()
 
             if state == "BANK_DEPOSIT":
-                if user['cash'] < amount:
+                cur.execute("BEGIN IMMEDIATE")
+                from .economy import modify_cash
+                if not modify_cash(user['id'], -amount, "Bank Deposit", cur, conn):
                     bot.send_message(message.chat.id, "موجودی نقد کافی نیست.")
+                    conn.rollback()
                 else:
-                    cur.execute("UPDATE users SET cash = cash - ? WHERE id = ?", (amount, user['id']))
                     cur.execute("UPDATE bank_accounts SET balance = balance + ? WHERE user_id = ?", (amount, user['id']))
                     bot.send_message(message.chat.id, f"مبلغ ${amount:,.2f} به حساب بانکی واریز شد.")
+                    conn.commit()
 
             elif state == "BANK_WITHDRAW":
                 if bank['balance'] < amount:
                     bot.send_message(message.chat.id, "موجودی بانک کافی نیست.")
                 else:
-                    cur.execute("UPDATE users SET cash = cash + ? WHERE id = ?", (amount, user['id']))
+                    cur.execute("BEGIN IMMEDIATE")
+                    from .economy import modify_cash
+                    modify_cash(user['id'], amount, "Bank Withdrawal", cur, conn)
                     cur.execute("UPDATE bank_accounts SET balance = balance - ? WHERE user_id = ?", (amount, user['id']))
                     bot.send_message(message.chat.id, f"مبلغ ${amount:,.2f} از حساب بانکی برداشت شد.")
+                    conn.commit()
 
             elif state == "BANK_LOAN":
                 max_loan = (user['credit_score'] / 850) * 50000

@@ -41,14 +41,17 @@ def setup(bot):
         if h_id not in HOUSES: return
 
         house = HOUSES[h_id]
-        if user['cash'] < house['price']:
-            bot.answer_callback_query(call.id, "پول نقد کافی ندارید!", show_alert=True)
-            return
-
+        from .economy import modify_cash
         with get_connection() as conn:
             cur = conn.cursor()
-            cur.execute("UPDATE users SET cash = cash - ? WHERE id = ?", (house['price'], user['id']))
+            cur.execute("BEGIN IMMEDIATE")
+            if not modify_cash(user['id'], -house['price'], f"Bought house {house['name']}", cur, conn):
+                bot.answer_callback_query(call.id, "پول نقد کافی ندارید!", show_alert=True)
+                conn.rollback()
+                return
+
             cur.execute("INSERT INTO houses (user_id, house_id) VALUES (?, ?)", (user['id'], h_id))
+            conn.commit()
 
         bot.answer_callback_query(call.id, f"شما {house['name']} را خریدید!", show_alert=True)
         bot.delete_message(call.message.chat.id, call.message.message_id)
@@ -93,14 +96,17 @@ def setup(bot):
         if c_id not in VEHICLES: return
 
         car = VEHICLES[c_id]
-        if user['cash'] < car['price']:
-            bot.answer_callback_query(call.id, "پول نقد کافی ندارید!", show_alert=True)
-            return
-
+        from .economy import modify_cash
         with get_connection() as conn:
             cur = conn.cursor()
-            cur.execute("UPDATE users SET cash = cash - ? WHERE id = ?", (car['price'], user['id']))
+            cur.execute("BEGIN IMMEDIATE")
+            if not modify_cash(user['id'], -car['price'], f"Bought vehicle {car['name']}", cur, conn):
+                bot.answer_callback_query(call.id, "پول نقد کافی ندارید!", show_alert=True)
+                conn.rollback()
+                return
+
             cur.execute("INSERT INTO vehicles (user_id, vehicle_id) VALUES (?, ?)", (user['id'], c_id))
+            conn.commit()
 
         bot.answer_callback_query(call.id, f"شما {car['name']} را خریدید!", show_alert=True)
         bot.delete_message(call.message.chat.id, call.message.message_id)

@@ -42,22 +42,25 @@ def setup(bot):
 
             with get_connection() as conn:
                 cur = conn.cursor()
-                # Deduct energy, add cash, add XP
-                cur.execute("""
-                    UPDATE users SET
-                        energy = energy - ?,
-                        cash = cash + ?,
-                        xp = xp + 20
-                    WHERE id = ?
-                """, (job['energy_cost'], job['salary'], user['id']))
+                cur.execute("BEGIN IMMEDIATE")
+                from .economy import modify_cash
+                from .data import CITIES
+                city_mod = CITIES.get(user['city'], {}).get('salary_mod', 1.0)
+                final_salary = job['salary'] * city_mod
+
+                modify_cash(user['id'], final_salary, f"Salary from {job['name']}", cur, conn)
+
+                # Deduct energy, add XP
+                cur.execute("UPDATE users SET energy = energy - ?, xp = xp + 20 WHERE id = ?", (job['energy_cost'], user['id']))
                 # Check level up
                 cur.execute("SELECT xp, level FROM users WHERE id = ?", (user['id'],))
                 xp, level = cur.fetchone()
                 if xp >= level * 100:
                     cur.execute("UPDATE users SET level = level + 1, xp = 0 WHERE id = ?", (user['id'],))
                     bot.send_message(call.message.chat.id, f"🎉 تبریک! شما به Level {level + 1} ارتقا یافتید!")
+                conn.commit()
 
-            bot.answer_callback_query(call.id, f"شما کار کردید و ${job['salary']:,.2f} درآمد کسب کردید.", show_alert=True)
+            bot.answer_callback_query(call.id, f"شما کار کردید و ${final_salary:,.2f} درآمد کسب کردید.", show_alert=True)
             bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=InlineKeyboardMarkup().add(
                 InlineKeyboardButton("کار کردن (روزانه)", callback_data="job_work"),
                 InlineKeyboardButton("استعفا", callback_data="job_quit")

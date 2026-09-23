@@ -43,17 +43,22 @@ def setup(bot):
 
         energy_cost = 20
 
-        if user['cash'] < cost:
-            bot.answer_callback_query(call.id, f"هزینه آموزش ${cost} است. پول کافی ندارید.", show_alert=True)
-            return
-
-        if user['energy'] < energy_cost:
-            bot.answer_callback_query(call.id, "انرژی کافی برای آموزش ندارید!", show_alert=True)
-            return
-
+        from .economy import modify_cash
         with get_connection() as conn:
             cur = conn.cursor()
+            cur.execute("BEGIN IMMEDIATE")
+            if not modify_cash(user['id'], -cost, f"Education: {skill}", cur, conn):
+                bot.answer_callback_query(call.id, f"هزینه آموزش ${cost} است. پول کافی ندارید.", show_alert=True)
+                conn.rollback()
+                return
+
+            if user['energy'] < energy_cost:
+                bot.answer_callback_query(call.id, "انرژی کافی برای آموزش ندارید!", show_alert=True)
+                conn.rollback()
+                return
+
             cur.execute(f"UPDATE skills SET {skill} = {skill} + 5 WHERE user_id = ?", (user['id'],))
-            cur.execute("UPDATE users SET cash = cash - ?, energy = energy - ?, xp = xp + 15 WHERE id = ?", (cost, energy_cost, user['id']))
+            cur.execute("UPDATE users SET energy = energy - ?, xp = xp + 15 WHERE id = ?", (energy_cost, user['id']))
+            conn.commit()
 
         bot.answer_callback_query(call.id, f"شما با موفقیت آموزش دیدید! مهارت شما افزایش یافت (-${cost}, -{energy_cost}⚡).", show_alert=True)

@@ -32,15 +32,20 @@ def daily_economy_tick():
             cur = conn.cursor()
 
             # 1. Update Ages (1 day in game = 1 hour IRL)
-            # You could map this differently, e.g., +1 month per hour. Let's do +1 month.
-            cur.execute("UPDATE users SET age = age + 1") # Let's treat age field as months temporarily or increment fractional years. For simplicity, assume integer field is "Months" in backend or we just update occasionally. Let's assume age is integer years, so we don't update every hour.
+            cur.execute("UPDATE users SET age_days = age_days + 1")
+            # When age_days reaches 365, increase age by 1 year and subtract 365 from age_days
+            cur.execute("UPDATE users SET age = age + 1, age_days = age_days - 365 WHERE age_days >= 365")
+
+            # Age children
+            cur.execute("UPDATE children SET age = age + 1 WHERE parent_id IN (SELECT id FROM users WHERE age_days = 0)")
 
             # 2. Business Income & Expenses
             cur.execute("SELECT owner_id, income_rate, expense_rate FROM businesses")
             businesses = cur.fetchall()
+            from .economy import modify_cash
             for b in businesses:
                 net = b['income_rate'] - b['expense_rate']
-                cur.execute("UPDATE users SET cash = cash + ? WHERE id = ?", (net, b['owner_id']))
+                modify_cash(b['owner_id'], net, "Daily Business Net Income", cur, conn)
 
             # 3. Bank Loan Interest & Deductions
             cur.execute("SELECT user_id, balance, loan_amount, loan_installment FROM bank_accounts WHERE loan_amount > 0 AND loan_installment > 0")

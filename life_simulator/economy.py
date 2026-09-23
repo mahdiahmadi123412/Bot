@@ -37,9 +37,31 @@ def setup(bot):
             cur.execute("INSERT INTO transactions (user_id, amount, type, description) VALUES (?, ?, ?, ?)",
                         (user_id, amount, tx_type, description))
 
-def modify_cash(user_id, amount, description=""):
-    with get_connection() as conn:
-        cur = conn.cursor()
+def modify_cash(user_id, amount, description="", cur=None, conn=None):
+    if cur is None or conn is None:
+        with get_connection() as local_conn:
+            local_cur = local_conn.cursor()
+            local_cur.execute("BEGIN IMMEDIATE")
+            try:
+                local_cur.execute("SELECT cash FROM users WHERE id = ?", (user_id,))
+                row = local_cur.fetchone()
+                if not row or row['cash'] + amount < 0:
+                    raise ValueError("Insufficient funds")
+                local_cur.execute("UPDATE users SET cash = cash + ? WHERE id = ?", (amount, user_id))
+                local_cur.execute("INSERT INTO transactions (user_id, amount, type, description) VALUES (?, ?, ?, ?)",
+                            (user_id, amount, 'CASH', description))
+                local_conn.commit()
+                return True
+            except Exception:
+                local_conn.rollback()
+                return False
+    else:
+        # Part of an existing transaction
+        cur.execute("SELECT cash FROM users WHERE id = ?", (user_id,))
+        row = cur.fetchone()
+        if not row or row['cash'] + amount < 0:
+            return False
         cur.execute("UPDATE users SET cash = cash + ? WHERE id = ?", (amount, user_id))
         cur.execute("INSERT INTO transactions (user_id, amount, type, description) VALUES (?, ?, ?, ?)",
                     (user_id, amount, 'CASH', description))
+        return True
