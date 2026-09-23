@@ -1,5 +1,5 @@
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton
-from .database import get_user, set_user_state
+from database import get_user, set_user_state
 
 def get_main_menu():
     markup = ReplyKeyboardMarkup(row_width=3, resize_keyboard=True)

@@ -1,17 +1,30 @@
-# Life Simulator Bot
+# Life Simulator Telegram Bot
 
-A comprehensive Life Simulator written in Python using `pyTelegramBotAPI`.
+A massive, fully modular 49-system Life Simulator running on Telegram, built with Python and PyTelegramBotAPI.
 
-## Systems Included (49 Systems interconnected):
-- **Core:** Character Creation, Age & Time loop, Stats, Needs (Hunger, Energy, Happiness, Thirst, Health).
-- **Economy:** Cash, Bank Accounts, Loans, Credit Score, Transactions, Dynamic Market.
-- **Career:** Tiered Jobs (Simple, Specialized, Management), Education, Resignation.
-- **Assets:** Real Estate (Houses), Vehicles (with fuel logic).
-- **Social:** Friends, Relationships, Family, Children.
-- **Business:** Companies, Daily Income & Expenses.
-- **Events:** Traveling between Cities, Global Economy, Achievements, Leaderboards.
+## Requirements
+- Python 3.10+
+- `pyTelegramBotAPI`
 
-## How to run:
-1. Make sure to have `telebot` installed: `pip install pyTelegramBotAPI`
-2. Export your bot token: `export BOT_TOKEN="your_token_here"`
-3. Run the bot: `python -m life_simulator.main`
+## How to run (Android Pydroid 3 & Linux/Windows)
+1. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+2. Navigate to the game folder:
+   ```bash
+   cd life_simulator
+   ```
+3. Run the bot directly:
+   ```bash
+   python main.py
+   ```
+
+## Configuration
+- `BOT_TOKEN` and `ADMIN_IDS` can be set as environment variables or directly inside `life_simulator/config.py`.
+
+## Systems Included
+- **Core:** Job Promotions, Education degrees, Business Hiring/Firing/Investments.
+- **Economy:** Shared Market, Bank Loans, Credit Scores, Atomic Transactions.
+- **Social:** Interactive Consent-based Friendships, Marriages, Child Aging via global clock.
+- **Anti-Cheat:** Thread-safe memory lock rate limiters.

@@ -1,6 +1,6 @@
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-from .database import get_user, get_connection, set_user_state, get_user_state
-from .economy import modify_cash
+from database import get_user, get_connection, set_user_state, get_user_state
+from economy import modify_cash
 
 def setup(bot):
     @bot.message_handler(func=lambda m: m.text == '🏦 بانک')
@@ -90,7 +90,7 @@ def setup(bot):
 
             if state == "BANK_DEPOSIT":
                 cur.execute("BEGIN IMMEDIATE")
-                from .economy import modify_cash
+                from economy import modify_cash
                 if not modify_cash(user['id'], -amount, "Bank Deposit", cur, conn):
                     bot.send_message(message.chat.id, "موجودی نقد کافی نیست.")
                     conn.rollback()
@@ -104,7 +104,7 @@ def setup(bot):
                     bot.send_message(message.chat.id, "موجودی بانک کافی نیست.")
                 else:
                     cur.execute("BEGIN IMMEDIATE")
-                    from .economy import modify_cash
+                    from economy import modify_cash
                     modify_cash(user['id'], amount, "Bank Withdrawal", cur, conn)
                     cur.execute("UPDATE bank_accounts SET balance = balance - ? WHERE user_id = ?", (amount, user['id']))
                     bot.send_message(message.chat.id, f"مبلغ ${amount:,.2f} از حساب بانکی برداشت شد.")

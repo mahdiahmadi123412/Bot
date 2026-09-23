@@ -1,5 +1,5 @@
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-from .database import get_user, get_connection, get_user_state
+from database import get_user, get_connection, get_user_state
 
 def setup(bot):
     @bot.message_handler(func=lambda m: m.text == '📈 بازار')
@@ -28,7 +28,7 @@ def setup(bot):
     @bot.callback_query_handler(func=lambda call: call.data.startswith('market_buy_'))
     def market_buy(call):
         item_id = call.data.replace('market_buy_', '')
-        from .database import set_user_state
+        from database import set_user_state
         set_user_state(call.from_user.id, "MARKET_BUY", {"item": item_id})
         bot.send_message(call.message.chat.id, f"تعداد {item_id} برای خرید را وارد کنید:")
         bot.answer_callback_query(call.id)
@@ -36,14 +36,14 @@ def setup(bot):
     @bot.callback_query_handler(func=lambda call: call.data.startswith('market_sell_'))
     def market_sell(call):
         item_id = call.data.replace('market_sell_', '')
-        from .database import set_user_state
+        from database import set_user_state
         set_user_state(call.from_user.id, "MARKET_SELL", {"item": item_id})
         bot.send_message(call.message.chat.id, f"تعداد {item_id} برای فروش را وارد کنید:")
         bot.answer_callback_query(call.id)
 
     @bot.message_handler(func=lambda m: get_user_state(m.from_user.id)[0] in ["MARKET_BUY", "MARKET_SELL"])
     def process_market(message):
-        from .database import get_user_state, set_user_state
+        from database import get_user_state, set_user_state
         state, data = get_user_state(message.from_user.id)
         user = get_user(message.from_user.id)
 
@@ -69,7 +69,7 @@ def setup(bot):
                 total_price = item['current_price'] * qty
 
                 if state == "MARKET_BUY":
-                    from .economy import modify_cash
+                    from economy import modify_cash
                     if not modify_cash(user['id'], -total_price, f"Bought {qty} {item_id}", cur, conn):
                         bot.send_message(message.chat.id, "پول کافی ندارید.")
                         conn.rollback()
@@ -94,7 +94,7 @@ def setup(bot):
                         conn.rollback()
                         set_user_state(user['tg_id'], "NONE")
                         return
-                    from .economy import modify_cash
+                    from economy import modify_cash
                     modify_cash(user['id'], total_price, f"Sold {qty} {item_id}", cur, conn)
                     cur.execute("UPDATE inventory SET quantity = quantity - ? WHERE user_id = ? AND item_id = ?", (qty, user['id'], item_id))
                     # Clean up zero inventory
@@ -115,7 +115,7 @@ def setup(bot):
         user = get_user(message.from_user.id)
         if not user: return
 
-        from .data import FOODS
+        from data import FOODS
         text = "🛒 فروشگاه روزمره\n\nبرای تامین نیازهای خود خرید کنید:"
         markup = InlineKeyboardMarkup(row_width=1)
         for f_id, f_info in FOODS.items():
@@ -129,7 +129,7 @@ def setup(bot):
         if not user: return
 
         f_id = call.data.replace('buy_food_', '')
-        from .data import FOODS
+        from data import FOODS
         if f_id not in FOODS: return
 
         food = FOODS[f_id]

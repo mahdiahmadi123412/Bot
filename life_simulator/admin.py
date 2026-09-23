@@ -1,6 +1,6 @@
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-from .database import get_user, get_connection
-from .config import ADMIN_IDS
+from database import get_user, get_connection
+from config import ADMIN_IDS
 
 def is_admin(user_id):
     return user_id in ADMIN_IDS
@@ -15,10 +15,10 @@ def setup(bot):
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(
             InlineKeyboardButton("آمار کلی", callback_data="admin_stats"),
-            InlineKeyboardButton("تولید رویداد", callback_data="admin_event")
+            InlineKeyboardButton("تولید رویداد پول (News)", callback_data="admin_event")
         )
         markup.add(
-            InlineKeyboardButton("اقتصاد جهانی", callback_data="admin_economy")
+            InlineKeyboardButton("اقتصاد جهانی (تورم)", callback_data="admin_economy")
         )
         bot.send_message(message.chat.id, text, reply_markup=markup)
 
@@ -40,17 +40,25 @@ def setup(bot):
             bot.send_message(call.message.chat.id, f"تعداد کاربران: {u_count}\nمجموع پول در گردش: ${total_cash:,.2f}")
             bot.answer_callback_query(call.id)
 
-
         elif action == "event":
             with get_connection() as conn:
                 cur = conn.cursor()
+                cur.execute("BEGIN IMMEDIATE")
                 cur.execute("UPDATE users SET cash = cash + 500")
+                cur.execute("INSERT INTO news (content) VALUES ('دولت به تمام شهروندان ۵۰۰ دلار یارانه پرداخت کرد!')")
+                conn.commit()
             bot.send_message(call.message.chat.id, "رویداد جهانی اجرا شد: 500$ به تمام کاربران داده شد.")
             bot.answer_callback_query(call.id)
 
         elif action == "economy":
             with get_connection() as conn:
                 cur = conn.cursor()
+                cur.execute("BEGIN IMMEDIATE")
                 cur.execute("INSERT INTO economy_history (inflation_rate, fuel_price_modifier, food_price_modifier, housing_price_modifier) VALUES (5.0, 1.1, 1.1, 1.2)")
-            bot.send_message(call.message.chat.id, "اقتصاد جهانی تغییر کرد (تورم 5%).")
+
+                # Apply inflation to base market prices dynamically
+                cur.execute("UPDATE market SET current_price = current_price * 1.05")
+                conn.commit()
+
+            bot.send_message(call.message.chat.id, "اقتصاد جهانی تغییر کرد (تورم ۵٪ بر بازار اعمال شد).")
             bot.answer_callback_query(call.id)

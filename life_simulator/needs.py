@@ -1,5 +1,5 @@
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-from .database import get_user, get_connection
+from database import get_user, get_connection
 
 def setup(bot):
     @bot.message_handler(func=lambda m: m.text == '🍔 نیازها')
@@ -50,10 +50,14 @@ def setup(bot):
 
             elif action == "water":
                 cost = 2
-                if user['cash'] < cost:
+                from economy import modify_cash
+                cur.execute("BEGIN IMMEDIATE")
+                if not modify_cash(user['id'], -cost, "Drank water", cur, conn):
                     bot.answer_callback_query(call.id, "پول کافی ندارید.", show_alert=True)
+                    conn.rollback()
                     return
-                cur.execute("UPDATE users SET cash = cash - ?, thirst = 100 WHERE id = ?", (cost, user['id']))
+                cur.execute("UPDATE users SET thirst = 100 WHERE id = ?", (user['id'],))
+                conn.commit()
                 bot.answer_callback_query(call.id, "شما آب نوشیدید.", show_alert=True)
 
             elif action == "sport":
@@ -65,19 +69,27 @@ def setup(bot):
 
             elif action == "doctor":
                 cost = 200
-                if user['cash'] < cost:
-                    bot.answer_callback_query(call.id, f"هزینه درمان ${cost} است. پول ندارید.", show_alert=True)
-                    return
                 if user['health'] >= 100:
                     bot.answer_callback_query(call.id, "شما در سلامت کامل هستید.", show_alert=True)
                     return
-                cur.execute("UPDATE users SET cash = cash - ?, health = 100 WHERE id = ?", (cost, user['id']))
+                from economy import modify_cash
+                cur.execute("BEGIN IMMEDIATE")
+                if not modify_cash(user['id'], -cost, "Visited doctor", cur, conn):
+                    bot.answer_callback_query(call.id, f"هزینه درمان ${cost} است. پول ندارید.", show_alert=True)
+                    conn.rollback()
+                    return
+                cur.execute("UPDATE users SET health = 100 WHERE id = ?", (user['id'],))
+                conn.commit()
                 bot.answer_callback_query(call.id, "شما درمان شدید و سلامتی خود را بازیافتید.", show_alert=True)
 
             elif action == "fun":
                 cost = 50
-                if user['cash'] < cost:
+                from economy import modify_cash
+                cur.execute("BEGIN IMMEDIATE")
+                if not modify_cash(user['id'], -cost, "Entertainment", cur, conn):
                     bot.answer_callback_query(call.id, f"هزینه تفریح ${cost} است. پول ندارید.", show_alert=True)
+                    conn.rollback()
                     return
-                cur.execute("UPDATE users SET cash = cash - ?, happiness = 100 WHERE id = ?", (cost, user['id']))
+                cur.execute("UPDATE users SET happiness = 100 WHERE id = ?", (user['id'],))
+                conn.commit()
                 bot.answer_callback_query(call.id, "شما تفریح کردید و روحیه‌تان عالی شد!", show_alert=True)

@@ -1,5 +1,5 @@
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-from .database import get_user, get_connection, get_user_state
+from database import get_user, get_connection, get_user_state
 
 def setup(bot):
     @bot.message_handler(func=lambda m: m.text == '👥 دوستان')
@@ -69,14 +69,14 @@ def setup(bot):
 
     @bot.callback_query_handler(func=lambda call: call.data == "social_add_friend")
     def ask_friend_id(call):
-        from .database import set_user_state
+        from database import set_user_state
         set_user_state(call.from_user.id, "SOCIAL_ADD_FRIEND")
         bot.send_message(call.message.chat.id, "لطفا Telegram ID کاربری که می‌خواهید با او دوست شوید را بفرستید:")
         bot.answer_callback_query(call.id)
 
     @bot.message_handler(func=lambda m: get_user_state(m.from_user.id)[0] == "SOCIAL_ADD_FRIEND")
     def process_add_friend(message):
-        from .database import get_user, set_user_state
+        from database import get_user, set_user_state
         tg_id = message.from_user.id
         user = get_user(tg_id)
 
@@ -119,7 +119,7 @@ def setup(bot):
 
     @bot.callback_query_handler(func=lambda call: call.data.startswith('social_accept_friend_'))
     def accept_friend(call):
-        from .database import get_user
+        from database import get_user
         target_user_id = int(call.data.replace('social_accept_friend_', ''))
         user = get_user(call.from_user.id)
 
@@ -136,14 +136,14 @@ def setup(bot):
 
     @bot.callback_query_handler(func=lambda call: call.data == "family_propose")
     def family_propose(call):
-        from .database import set_user_state
+        from database import set_user_state
         set_user_state(call.from_user.id, "FAMILY_PROPOSE")
         bot.send_message(call.message.chat.id, "برای ازدواج، باید Telegram ID فرد مورد نظر را وارد کنید:")
         bot.answer_callback_query(call.id)
 
     @bot.message_handler(func=lambda m: get_user_state(m.from_user.id)[0] == "FAMILY_PROPOSE")
     def process_propose(message):
-        from .database import get_user, set_user_state
+        from database import get_user, set_user_state
         tg_id = message.from_user.id
         user = get_user(tg_id)
 
@@ -182,7 +182,7 @@ def setup(bot):
 
     @bot.callback_query_handler(func=lambda call: call.data.startswith('family_accept_propose_'))
     def accept_propose(call):
-        from .database import get_user
+        from database import get_user
         target_user_id = int(call.data.replace('family_accept_propose_', ''))
         user = get_user(call.from_user.id)
 
@@ -199,7 +199,7 @@ def setup(bot):
 
     @bot.callback_query_handler(func=lambda call: call.data == "family_have_child")
     def family_have_child(call):
-        from .database import get_user, set_user_state
+        from database import get_user, set_user_state
         tg_id = call.from_user.id
         user = get_user(tg_id)
 
@@ -213,7 +213,7 @@ def setup(bot):
 
     @bot.message_handler(func=lambda m: get_user_state(m.from_user.id)[0] == "FAMILY_CHILD_NAME")
     def process_child_name(message):
-        from .database import get_user, set_user_state
+        from database import get_user, set_user_state
         tg_id = message.from_user.id
         user = get_user(tg_id)
         child_name = message.text.strip()

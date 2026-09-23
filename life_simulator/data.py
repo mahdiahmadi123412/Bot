@@ -14,9 +14,9 @@ JOBS = {
     "farmer": {"name": "کشاورز", "salary": 2800, "hours": 10, "req_skills": {"technical": 10}, "energy_cost": 50},
 
     # Specialized Jobs
-    "programmer_junior": {"name": "برنامه‌نویس Junior", "salary": 3500, "hours": 8, "req_skills": {"programming": 20}, "energy_cost": 20},
-    "programmer_mid": {"name": "برنامه‌نویس Mid-Level", "salary": 5500, "hours": 8, "req_skills": {"programming": 50}, "energy_cost": 25},
-    "programmer_senior": {"name": "برنامه‌نویس Senior", "salary": 8000, "hours": 8, "req_skills": {"programming": 80, "management": 20}, "energy_cost": 30},
+    "programmer_junior": {"name": "برنامه‌نویس Junior", "salary": 3500, "hours": 8, "req_skills": {"programming": 20}, "energy_cost": 20, "promotion": "programmer_mid", "req_level": 2},
+    "programmer_mid": {"name": "برنامه‌نویس Mid-Level", "salary": 5500, "hours": 8, "req_skills": {"programming": 50}, "energy_cost": 25, "promotion": "programmer_senior", "req_level": 5},
+    "programmer_senior": {"name": "برنامه‌نویس Senior", "salary": 8000, "hours": 8, "req_skills": {"programming": 80, "management": 20}, "energy_cost": 30, "promotion": "cto", "req_level": 10},
     "sysadmin": {"name": "مدیر سیستم", "salary": 6000, "hours": 8, "req_skills": {"programming": 40, "technical": 50}, "energy_cost": 25},
     "devops": {"name": "مهندس DevOps", "salary": 7500, "hours": 8, "req_skills": {"programming": 60, "technical": 60}, "energy_cost": 30},
     "data_scientist": {"name": "دانشمند داده", "salary": 9000, "hours": 8, "req_skills": {"programming": 70, "knowledge": 80}, "energy_cost": 25},

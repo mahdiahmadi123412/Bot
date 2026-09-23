@@ -1,6 +1,6 @@
-from .database import get_user, create_user, set_user_state, get_connection, get_user_state
-from .ui import get_main_menu, get_cancel_markup
-from .data import CITIES
+from database import get_user, create_user, set_user_state, get_connection, get_user_state
+from ui import get_main_menu, get_cancel_markup
+from data import CITIES
 import json
 
 def setup(bot):
@@ -85,7 +85,7 @@ def setup(bot):
             cur.execute("SELECT * FROM skills WHERE user_id = ?", (user['id'],))
             skills = cur.fetchone()
 
-        from .data import JOBS
+        from data import JOBS
         job_name = JOBS.get(user['job_id'], {}).get('name', 'بیکار') if user['job_id'] else 'بیکار'
         city_name = CITIES.get(user['city'], {}).get('name', 'نامشخص') if user['city'] else 'نامشخص'
 

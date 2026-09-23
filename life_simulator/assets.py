@@ -1,6 +1,6 @@
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-from .database import get_user, get_connection
-from .data import HOUSES, VEHICLES
+from database import get_user, get_connection
+from data import HOUSES, VEHICLES
 
 def setup(bot):
     @bot.message_handler(func=lambda m: m.text == '🏠 املاک')
@@ -41,7 +41,7 @@ def setup(bot):
         if h_id not in HOUSES: return
 
         house = HOUSES[h_id]
-        from .economy import modify_cash
+        from economy import modify_cash
         with get_connection() as conn:
             cur = conn.cursor()
             cur.execute("BEGIN IMMEDIATE")
@@ -96,7 +96,7 @@ def setup(bot):
         if c_id not in VEHICLES: return
 
         car = VEHICLES[c_id]
-        from .economy import modify_cash
+        from economy import modify_cash
         with get_connection() as conn:
             cur = conn.cursor()
             cur.execute("BEGIN IMMEDIATE")

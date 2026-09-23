@@ -1,5 +1,5 @@
-from .database import get_user, get_connection
-from .ui import get_main_menu
+from database import get_user, get_connection
+from ui import get_main_menu
 
 def setup(bot):
     @bot.message_handler(func=lambda m: m.text == '💰 اقتصاد')
